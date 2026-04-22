@@ -13,3 +13,9 @@ model Session {
   duration Int
   ts       DateTime @default(now())
 }
+
+model Category {
+  id    Int    @id @default(autoincrement())
+  name  String @unique
+  color String
+}

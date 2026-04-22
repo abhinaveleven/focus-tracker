@@ -274,9 +274,9 @@
             <div class="cats" id="cat-row"></div>
 
             <div class="controls">
-                <button class="btn primary" id="btn-ss" onclick="toggleTimer()" disabled>Start</button>
-                <button class="btn" id="btn-save" onclick="saveSession()" disabled>Save</button>
-                <button class="btn" id="btn-reset" onclick="resetTimer()" disabled>Reset</button>
+                <button class="btn primary" id="btn-start" onclick="actionTimer('start')" disabled>Start</button>
+                <button class="btn" id="btn-pause" onclick="actionTimer('pause')" disabled>Pause</button>
+                <button class="btn" id="btn-stop" onclick="actionTimer('stop')" disabled>Stop</button>
             </div>
 
             <div class="today-stats" id="today-stats"></div>
@@ -288,16 +288,15 @@
     </div>
 
     <script>
-        const CAT_COLORS = { work: '#378ADD', gym: '#4ade80', study: '#a78bfa', creative: '#fb923c', other: '#6b7280' };
-        const CATEGORIES = ['work', 'gym', 'study', 'creative', 'other'];
-
         let state = {
-            running: false,
+            timerState: 'idle',
             elapsed: 0,
             startTs: null,
+            pausedAt: null,
             category: null,
             sessions: []
         };
+        let categories = [];
         let ticker = null;
 
         // --- Global Sync ---
@@ -310,12 +309,13 @@
                 if (data.lastModified > serverLastModified) {
                     serverLastModified = data.lastModified;
                     
-                    state.running = data.running;
+                    state.timerState = data.state;
                     state.elapsed = data.elapsed;
                     state.startTs = data.startTs;
+                    state.pausedAt = data.pausedAt;
                     state.category = data.category;
                     
-                    if (state.running) {
+                    if (state.timerState === 'running' || state.timerState === 'paused') {
                         if (!ticker) ticker = setInterval(renderDisplay, 50);
                     } else {
                         if (ticker) {
@@ -334,9 +334,10 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        running: state.running,
+                        state: state.timerState,
                         elapsed: state.elapsed,
                         startTs: state.startTs,
+                        pausedAt: state.pausedAt,
                         category: state.category
                     })
                 });
@@ -346,6 +347,25 @@
         }
 
         // --- API Calls ---
+        async function loadCategories() {
+            const res = await fetch('/api/categories');
+            categories = await res.json();
+            renderCatPills();
+            renderHistory();
+        }
+
+        async function addCategory() {
+            const name = prompt("Enter new category name:");
+            if (!name) return;
+            const color = '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
+            await fetch('/api/categories', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name.toLowerCase(), color })
+            });
+            await loadCategories();
+        }
+
         async function loadSessions() {
             try {
                 const res = await fetch('/api/sessions');
@@ -357,24 +377,28 @@
         async function saveSession() {
             const durMs = getElapsedMs();
             const durSecs = Math.floor(durMs / 1000);
-            if (durSecs < 1) return;
 
-            try {
-                await fetch('/api/sessions', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ category: state.category, duration: durSecs })
-                });
-                // Reset local state and reload
-                state.elapsed = 0; state.startTs = null; state.running = false;
-                if (ticker) {
-                    clearInterval(ticker);
-                    ticker = null;
-                }
-                updateServerTimer();
-                await loadSessions();
-                showTab('history');
-            } catch (e) { alert("Failed to save to server."); }
+            if (durSecs > 0 && state.category) {
+                try {
+                    await fetch('/api/sessions', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ category: state.category, duration: durSecs })
+                    });
+                } catch(e) { console.error("Failed to save to server."); }
+            }
+
+            state.timerState = 'idle';
+            state.elapsed = 0; 
+            state.startTs = null; 
+            state.pausedAt = null;
+            if (ticker) {
+                clearInterval(ticker);
+                ticker = null;
+            }
+            updateServerTimer();
+            await loadSessions();
+            showTab('history');
         }
 
         async function deleteSession(id) {
@@ -385,43 +409,38 @@
 
         // --- Logic ---
         function getElapsedMs() {
-            if (!state.running) return state.elapsed;
-            return state.elapsed + (Date.now() - state.startTs);
+            if (state.timerState === 'running') {
+                return state.elapsed + (Date.now() - state.startTs);
+            }
+            return state.elapsed;
         }
 
-        function toggleTimer() {
-            if (state.running) {
-                state.elapsed = getElapsedMs();
-                state.running = false;
-                state.startTs = null;
-                if (ticker) {
-                    clearInterval(ticker);
-                    ticker = null;
+        function actionTimer(action) {
+            if (action === 'start') {
+                if (state.timerState === 'idle') {
+                    state.elapsed = 0;
                 }
-            } else {
+                state.timerState = 'running';
                 state.startTs = Date.now();
-                state.running = true;
-                ticker = setInterval(renderDisplay, 50);
+                state.pausedAt = null;
+                if (!ticker) ticker = setInterval(renderDisplay, 50);
+                updateServerTimer();
+                renderAll();
+            } else if (action === 'pause') {
+                if (state.timerState === 'running') {
+                    state.elapsed = getElapsedMs();
+                    state.timerState = 'paused';
+                    state.startTs = null;
+                    state.pausedAt = Date.now();
+                }
+                updateServerTimer();
+                renderAll();
+            } else if (action === 'stop') {
+                saveSession();
             }
-            updateServerTimer();
-            renderAll();
-        }
-
-        function resetTimer() {
-            state.elapsed = 0; state.startTs = null; state.running = false;
-            if (ticker) {
-                clearInterval(ticker);
-                ticker = null;
-            }
-            updateServerTimer();
-            renderAll();
         }
 
         // --- Rendering ---
-        function fmt(s) {
-            return new Date(s * 1000).toISOString().substr(11, 8);
-        }
-
         function fmtShort(s) {
             const h = Math.floor(s / 3600);
             const m = Math.floor((s % 3600) / 60);
@@ -437,7 +456,6 @@
             const ms = Math.floor((msTotal % 1000) / 10);
 
             let timeStr = "";
-
             if (hours > 0) {
                 timeStr = [hours, minutes, seconds].map(v => String(v).padStart(2, '0')).join(':');
             } else if (minutes > 0) {
@@ -448,22 +466,43 @@
 
             const el = document.getElementById('display');
             el.textContent = timeStr;
-            el.className = 'time ' + (msTotal === 0 ? 'zero' : state.running ? 'running' : '');
+            el.className = 'time ' + (msTotal === 0 ? 'zero' : state.timerState === 'running' ? 'running' : '');
 
-            document.getElementById('btn-ss').disabled = !state.category;
-            document.getElementById('btn-ss').textContent = state.running ? 'Pause' : 'Start';
-            document.getElementById('btn-save').disabled = totalSeconds < 10;
-            document.getElementById('btn-reset').disabled = msTotal === 0;
+            const hint = document.getElementById('hint');
+            if (state.timerState === 'paused' && state.pausedAt) {
+                const pausedTime = Date.now() - state.pausedAt;
+                const remaining = 20 * 60 * 1000 - pausedTime;
+                if (remaining > 0) {
+                    const rSecs = Math.floor(remaining / 1000);
+                    const rMins = Math.floor(rSecs / 60);
+                    const rSecsRem = rSecs % 60;
+                    hint.textContent = `Auto-saving in ${rMins}:${String(rSecsRem).padStart(2, '0')}`;
+                    hint.style.color = '#fb923c';
+                } else {
+                    hint.textContent = 'Auto-saving...';
+                }
+            } else {
+                hint.textContent = 'Select a category';
+                hint.style.color = 'var(--text2)';
+                if (state.category && state.timerState === 'idle') hint.textContent = 'Ready to start';
+                if (state.timerState === 'running') hint.textContent = 'Focusing...';
+            }
+
+            document.getElementById('btn-start').disabled = !state.category || state.timerState === 'running';
+            document.getElementById('btn-pause').disabled = state.timerState !== 'running';
+            document.getElementById('btn-stop').disabled = state.timerState === 'idle';
         }
 
         function renderCatPills() {
             const row = document.getElementById('cat-row');
-            row.innerHTML = CATEGORIES.map(c => `
-        <button class="cat-pill ${state.category === c ? 'active' : ''}" 
-                onclick="setCat('${c}')" ${state.running ? 'disabled' : ''}>
-          ${c.charAt(0).toUpperCase() + c.slice(1)}
-        </button>
-      `).join('');
+            row.innerHTML = categories.map(c => `
+                <button class="cat-pill ${state.category === c.name ? 'active' : ''}" 
+                        onclick="setCat('${c.name}')" ${state.timerState !== 'idle' ? 'disabled' : ''}>
+                ${c.name.charAt(0).toUpperCase() + c.name.slice(1)}
+                </button>
+            `).join('') + `
+                <button class="cat-pill" onclick="addCategory()" ${state.timerState !== 'idle' ? 'disabled' : ''}>+</button>
+            `;
         }
 
         function setCat(c) {
@@ -496,9 +535,12 @@
             list.innerHTML = Object.entries(grouped).map(([date, sess]) => `
         <div class="day-group">
           <div class="day-head"><span class="day-name">${date}</span></div>
-          ${sess.map(s => `
+          ${sess.map(s => {
+                const catInfo = categories.find(c => c.name === s.category) || {};
+                const color = catInfo.color || '#555';
+                return `
             <div class="sess-row">
-              <div class="dot" style="background:${CAT_COLORS[s.category] || '#555'}"></div>
+              <div class="dot" style="background:${color}"></div>
               <div>
                 <div style="font-size:14px; text-transform:capitalize">${s.category}</div>
                 <div style="font-size:11px; color:var(--text3)">${new Date(s.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
@@ -506,7 +548,7 @@
               <div class="sess-dur">${fmtShort(s.duration)}</div>
               <button class="del" onclick="deleteSession(${s.id})">×</button>
             </div>
-          `).join('')}
+          `}).join('')}
         </div>
       `).join('');
         }
@@ -535,9 +577,11 @@
         updateDateTime();
 
         // Initial Load
-        syncTimerState();
-        setInterval(syncTimerState, 1500);
-        loadSessions();
+        loadCategories().then(() => {
+            syncTimerState();
+            setInterval(syncTimerState, 1500);
+            loadSessions();
+        });
     </script>
 </body>
 
