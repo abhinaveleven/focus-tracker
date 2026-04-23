@@ -45,15 +45,26 @@ app.get('/api/sessions', async (req, res) => {
 
 // 3. API: Save a session
 app.post('/api/sessions', async (req, res) => {
-    const { category, duration } = req.body;
+    const { category, duration, note } = req.body;
     const newSession = await prisma.session.create({
         data: {
             category,
             duration: parseInt(duration),
+            note,
             ts: new Date(),
         },
     });
     res.json(newSession);
+});
+
+// 3.5 API: Update a session note
+app.put('/api/sessions/:id', async (req, res) => {
+    const { note } = req.body;
+    const updated = await prisma.session.update({
+        where: { id: parseInt(req.params.id) },
+        data: { note }
+    });
+    res.json(updated);
 });
 
 // 4. API: Delete a session
@@ -89,7 +100,7 @@ app.delete('/api/categories/:id', async (req, res) => {
 
 // 5. In-Memory Active Timer State
 // state: 'idle' | 'running' | 'paused' | 'stopped'
-let activeTimer = { state: 'idle', elapsed: 0, startTs: null, category: null, pausedAt: null, lastModified: Date.now() };
+let activeTimer = { state: 'idle', elapsed: 0, startTs: null, category: null, pausedAt: null, note: '', lastModified: Date.now() };
 
 app.get('/api/timer', (req, res) => {
     res.json(activeTimer);
@@ -120,6 +131,7 @@ setInterval(async () => {
                     data: {
                         category: activeTimer.category,
                         duration: durationSecs,
+                        note: activeTimer.note,
                         ts: new Date(),
                     },
                 });
@@ -134,6 +146,7 @@ setInterval(async () => {
                     activeTimer.elapsed = 0;
                     activeTimer.startTs = null;
                     activeTimer.pausedAt = null;
+                    activeTimer.note = '';
                 }
                 activeTimer.lastModified = Date.now();
             } catch (e) {
@@ -153,6 +166,7 @@ setInterval(async () => {
                         data: {
                             category: activeTimer.category,
                             duration: durationSecs,
+                            note: activeTimer.note,
                             ts: new Date()
                         }
                     });
@@ -165,6 +179,7 @@ setInterval(async () => {
             activeTimer.elapsed = 0;
             activeTimer.startTs = null;
             activeTimer.pausedAt = null;
+            activeTimer.note = '';
             activeTimer.lastModified = Date.now();
         }
     }

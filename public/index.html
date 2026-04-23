@@ -252,7 +252,61 @@
         .del:hover {
             color: #f87171;
         }
+        .note-input {
+            width: 100%;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 10px 14px;
+            border-radius: var(--radius);
+            font-size: 14px;
+            margin-bottom: 2rem;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .note-input:focus { border-color: var(--accent); }
+
+        .chart-container {
+            width: 100%;
+            margin-bottom: 2rem;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1rem;
+        }
+        .history-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 1rem;
+            justify-content: flex-end;
+        }
+        .chart-btn {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text2);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .chart-btn.active {
+            background: var(--bg3);
+            color: var(--text);
+            border-color: var(--border2);
+        }
+        .sess-note-edit {
+            background: transparent;
+            border: none;
+            border-bottom: 1px dashed var(--border2);
+            color: var(--text);
+            font-size: 13px;
+            width: 100%;
+            margin-top: 4px;
+            outline: none;
+            font-family: inherit;
+        }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 
 <body>
@@ -273,6 +327,8 @@
 
             <div class="cats" id="cat-row"></div>
 
+            <input type="text" id="active-note" class="note-input" placeholder="What are you working on?" oninput="updateActiveNote(this.value)" />
+
             <div class="controls">
                 <button class="btn primary" id="btn-start" onclick="actionTimer('start')" disabled>Start</button>
                 <button class="btn" id="btn-pause" onclick="actionTimer('pause')" disabled>Pause</button>
@@ -283,6 +339,15 @@
         </div>
 
         <div id="tab-history" style="display:none">
+            <div class="chart-container">
+                <div class="history-controls">
+                    <button class="chart-btn active" onclick="setChartRange(7)">7D</button>
+                    <button class="chart-btn" onclick="setChartRange(10)">10D</button>
+                    <button class="chart-btn" onclick="setChartRange(14)">14D</button>
+                    <button class="chart-btn" onclick="setChartRange(30)">30D</button>
+                </div>
+                <canvas id="trendChart" height="200"></canvas>
+            </div>
             <div id="history-list"></div>
         </div>
     </div>
@@ -294,10 +359,14 @@
             startTs: null,
             pausedAt: null,
             category: null,
+            note: '',
             sessions: []
         };
         let categories = [];
         let ticker = null;
+        let chartInstance = null;
+        let chartRange = 7;
+        let noteDebounce = null;
 
         // --- Global Sync ---
         let serverLastModified = 0;
@@ -314,6 +383,10 @@
                     state.startTs = data.startTs;
                     state.pausedAt = data.pausedAt;
                     state.category = data.category;
+                    state.note = data.note || '';
+                    if (document.activeElement !== document.getElementById('active-note')) {
+                        document.getElementById('active-note').value = state.note;
+                    }
                     
                     if (state.timerState === 'running' || state.timerState === 'paused') {
                         if (!ticker) ticker = setInterval(renderDisplay, 50);
@@ -338,7 +411,8 @@
                         elapsed: state.elapsed,
                         startTs: state.startTs,
                         pausedAt: state.pausedAt,
-                        category: state.category
+                        category: state.category,
+                        note: state.note
                     })
                 });
                 const data = await res.json();
@@ -366,6 +440,16 @@
             await loadCategories();
         }
 
+        async function deleteCategory(id, event) {
+            event.stopPropagation();
+            if (!confirm("Delete this category?")) return;
+            await fetch(`/api/categories/${id}`, { method: 'DELETE' });
+            if (state.category && categories.find(c => c.id === id)?.name === state.category) {
+                state.category = null;
+            }
+            await loadCategories();
+        }
+
         async function loadSessions() {
             try {
                 const res = await fetch('/api/sessions');
@@ -383,7 +467,7 @@
                     await fetch('/api/sessions', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ category: state.category, duration: durSecs })
+                        body: JSON.stringify({ category: state.category, duration: durSecs, note: state.note })
                     });
                 } catch(e) { console.error("Failed to save to server."); }
             }
@@ -392,6 +476,8 @@
             state.elapsed = 0; 
             state.startTs = null; 
             state.pausedAt = null;
+            state.note = '';
+            document.getElementById('active-note').value = '';
             if (ticker) {
                 clearInterval(ticker);
                 ticker = null;
@@ -408,6 +494,24 @@
         }
 
         // --- Logic ---
+        function updateActiveNote(val) {
+            state.note = val;
+            if (noteDebounce) clearTimeout(noteDebounce);
+            noteDebounce = setTimeout(() => {
+                updateServerTimer();
+            }, 500);
+        }
+
+        async function updateHistoricalNote(id, val) {
+            await fetch(`/api/sessions/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ note: val })
+            });
+            const sess = state.sessions.find(s => s.id === id);
+            if (sess) sess.note = val;
+        }
+
         function getElapsedMs() {
             if (state.timerState === 'running') {
                 return state.elapsed + (Date.now() - state.startTs);
@@ -468,6 +572,8 @@
             el.textContent = timeStr;
             el.className = 'time ' + (msTotal === 0 ? 'zero' : state.timerState === 'running' ? 'running' : '');
 
+            document.title = state.timerState === 'running' ? timeStr + ' - Focus Tracker' : 'Focus Tracker';
+
             const hint = document.getElementById('hint');
             if (state.timerState === 'paused' && state.pausedAt) {
                 const pausedTime = Date.now() - state.pausedAt;
@@ -499,6 +605,7 @@
                 <button class="cat-pill ${state.category === c.name ? 'active' : ''}" 
                         onclick="setCat('${c.name}')" ${state.timerState !== 'idle' ? 'disabled' : ''}>
                 ${c.name.charAt(0).toUpperCase() + c.name.slice(1)}
+                ${state.timerState === 'idle' ? `<span style="margin-left:6px; opacity:0.5; padding:0 4px;" onclick="deleteCategory(${c.id}, event)">&times;</span>` : ''}
                 </button>
             `).join('') + `
                 <button class="cat-pill" onclick="addCategory()" ${state.timerState !== 'idle' ? 'disabled' : ''}>+</button>
@@ -539,18 +646,24 @@
                 const catInfo = categories.find(c => c.name === s.category) || {};
                 const color = catInfo.color || '#555';
                 return `
-            <div class="sess-row">
-              <div class="dot" style="background:${color}"></div>
-              <div>
-                <div style="font-size:14px; text-transform:capitalize">${s.category}</div>
-                <div style="font-size:11px; color:var(--text3)">${new Date(s.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+            <div class="sess-row" style="flex-wrap:wrap">
+              <div style="display:flex; width:100%; align-items:center; gap:10px">
+                <div class="dot" style="background:${color}"></div>
+                <div>
+                  <div style="font-size:14px; text-transform:capitalize">${s.category}</div>
+                  <div style="font-size:11px; color:var(--text3)">${new Date(s.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                </div>
+                <div class="sess-dur">${fmtShort(s.duration)}</div>
+                <button class="del" onclick="deleteSession(${s.id})">×</button>
               </div>
-              <div class="sess-dur">${fmtShort(s.duration)}</div>
-              <button class="del" onclick="deleteSession(${s.id})">×</button>
+              <input type="text" class="sess-note-edit" placeholder="Add a note..." 
+                     value="${(s.note || '').replace(/"/g, '&quot;')}" 
+                     onchange="updateHistoricalNote(${s.id}, this.value)" />
             </div>
           `}).join('')}
         </div>
       `).join('');
+            renderChart();
         }
 
         function renderAll() {
@@ -558,6 +671,60 @@
             renderCatPills();
             renderTodayStats();
             renderHistory();
+        }
+
+        function setChartRange(days) {
+            chartRange = days;
+            document.querySelectorAll('.chart-btn').forEach(btn => 
+                btn.classList.toggle('active', parseInt(btn.textContent) === days));
+            renderChart();
+        }
+
+        function renderChart() {
+            const ctx = document.getElementById('trendChart');
+            if (!ctx) return;
+            if (chartInstance) chartInstance.destroy();
+
+            const cutoff = new Date();
+            cutoff.setDate(cutoff.getDate() - chartRange + 1);
+            cutoff.setHours(0,0,0,0);
+
+            const dates = [];
+            for (let i = 0; i < chartRange; i++) {
+                const d = new Date(cutoff);
+                d.setDate(d.getDate() + i);
+                dates.push(d.toDateString());
+            }
+
+            const datasets = categories.map(cat => {
+                return {
+                    label: cat.name,
+                    borderColor: cat.color,
+                    backgroundColor: cat.color,
+                    data: dates.map(dateStr => {
+                        return state.sessions
+                            .filter(s => s.category === cat.name && new Date(s.ts).toDateString() === dateStr)
+                            .reduce((sum, s) => sum + s.duration, 0) / 60;
+                    }),
+                    tension: 0.3
+                };
+            });
+
+            chartInstance = new Chart(ctx.getContext('2d'), {
+                type: 'line',
+                data: {
+                    labels: dates.map(d => d.substring(4, 10)),
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { labels: { color: '#888', font: { size: 10 } } } },
+                    scales: {
+                        x: { ticks: { color: '#888' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                        y: { ticks: { color: '#888' }, grid: { color: 'rgba(255,255,255,0.05)' }, title: { display: true, text: 'Minutes', color: '#555' } }
+                    }
+                }
+            });
         }
 
         function showTab(t) {

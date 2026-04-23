@@ -11,6 +11,7 @@ model Session {
   id       Int      @id @default(autoincrement())
   category String
   duration Int
+  note     String?
   ts       DateTime @default(now())
 }
 
