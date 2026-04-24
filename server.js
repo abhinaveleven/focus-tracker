@@ -18,8 +18,28 @@ const defaultCategories = [
     { name: 'other', color: '#6b7280' }
 ];
 
+async function deduplicateCategories() {
+    try {
+        const allCategories = await prisma.category.findMany();
+        const seen = new Set();
+        for (const cat of allCategories) {
+            const key = `${cat.userId}-${cat.name.toLowerCase()}`;
+            if (seen.has(key)) {
+                await prisma.category.delete({ where: { id: cat.id } });
+                console.log(`Deleted duplicate category: ${cat.name} for user ${cat.userId}`);
+            } else {
+                seen.add(key);
+            }
+        }
+    } catch (e) {
+        console.error('Failed to deduplicate categories', e);
+    }
+}
+
 async function seedUsersAndCategories() {
     try {
+        await deduplicateCategories();
+        
         let defaultUser = await prisma.user.findUnique({ where: { name: 'abhinav' } });
         if (!defaultUser) {
             defaultUser = await prisma.user.upsert({
@@ -33,11 +53,14 @@ async function seedUsersAndCategories() {
         const catCount = await prisma.category.count();
         if (catCount === 0) {
             for (const cat of defaultCategories) {
-                await prisma.category.upsert({
-                    where: { userId_name: { userId: defaultUser.id, name: cat.name } },
-                    update: {},
-                    create: { name: cat.name, color: cat.color, userId: defaultUser.id }
+                const existing = await prisma.category.findFirst({
+                    where: { userId: defaultUser.id, name: cat.name }
                 });
+                if (!existing) {
+                    await prisma.category.create({
+                        data: { name: cat.name, color: cat.color, userId: defaultUser.id }
+                    });
+                }
             }
             console.log('Seeded default categories for abhinav.');
         }
@@ -154,6 +177,14 @@ app.post('/api/categories', async (req, res) => {
     try {
         const { name, color, userId } = req.body;
         if (!userId) return res.status(400).json({ error: 'userId required' });
+        
+        const existing = await prisma.category.findFirst({
+            where: { userId: parseInt(userId), name }
+        });
+        if (existing) {
+            return res.json(existing);
+        }
+
         const cat = await prisma.category.create({ data: { name, color, userId: parseInt(userId) } });
         res.json(cat);
     } catch (e) {

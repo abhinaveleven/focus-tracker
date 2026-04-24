@@ -31,6 +31,4 @@ model Category {
   user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   name     String
   color    String
-
-  @@unique([userId, name])
 }
