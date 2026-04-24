@@ -1,6 +1,7 @@
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const path = require('path');
+const fs = require('fs');
 
 const prisma = new PrismaClient();
 const app = express();
@@ -8,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Seed categories on startup
+// Seed data on startup
 const defaultCategories = [
     { name: 'work', color: '#378ADD' },
     { name: 'gym', color: '#4ade80' },
@@ -17,37 +18,107 @@ const defaultCategories = [
     { name: 'other', color: '#6b7280' }
 ];
 
-async function seedCategories() {
+async function seedUsersAndCategories() {
     try {
-        const count = await prisma.category.count();
-        if (count === 0) {
+        let defaultUser = await prisma.user.findUnique({ where: { name: 'abhinav' } });
+        if (!defaultUser) {
+            defaultUser = await prisma.user.upsert({
+                where: { id: 1 },
+                update: {},
+                create: { id: 1, name: 'abhinav' }
+            });
+            console.log('Seeded default user abhinav.');
+        }
+
+        const catCount = await prisma.category.count();
+        if (catCount === 0) {
             for (const cat of defaultCategories) {
-                await prisma.category.create({ data: cat });
+                await prisma.category.upsert({
+                    where: { userId_name: { userId: defaultUser.id, name: cat.name } },
+                    update: {},
+                    create: { name: cat.name, color: cat.color, userId: defaultUser.id }
+                });
             }
-            console.log('Seeded default categories.');
+            console.log('Seeded default categories for abhinav.');
         }
     } catch (e) {
-        console.error('Failed to seed categories.', e);
+        console.error('Failed to seed DB.', e);
     }
 }
-seedCategories();
+seedUsersAndCategories();
 
-// 1. Serve Static Files (The Frontend)
+// Active Timer Persistence
+let activeTimers = {};
+const TIMERS_FILE = path.join(__dirname, 'active_timers.json');
+
+try {
+    if (fs.existsSync(TIMERS_FILE)) {
+        const raw = fs.readFileSync(TIMERS_FILE, 'utf8');
+        activeTimers = JSON.parse(raw);
+        console.log('Loaded timer states from disk');
+    }
+} catch (e) {
+    console.error("Failed to load active timers", e);
+}
+
+let lastFlush = 0;
+function flushTimers() {
+    if (Date.now() - lastFlush < 4000) return;
+    lastFlush = Date.now();
+    fs.writeFile(TIMERS_FILE, JSON.stringify(activeTimers), () => {});
+}
+
+function getTimer(userIdStr) {
+    if (!activeTimers[userIdStr]) {
+        activeTimers[userIdStr] = { state: 'idle', elapsed: 0, startTs: null, category: null, pausedAt: null, note: '', lastModified: Date.now() };
+    }
+    return activeTimers[userIdStr];
+}
+
+// 1. Serve Static Files
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 2. API: Get all sessions
+// Users API
+app.get('/api/users', async (req, res) => {
+    const users = await prisma.user.findMany();
+    res.json(users.map(u => ({ id: u.id, name: u.name, hasPassword: !!u.password })));
+});
+
+app.post('/api/users', async (req, res) => {
+    const { name, password } = req.body;
+    try {
+        const u = await prisma.user.create({ data: { name, password } });
+        res.json({ id: u.id, name: u.name });
+    } catch (e) {
+        res.status(400).json({ error: 'Failed to create user. Name might be taken.' });
+    }
+});
+
+app.post('/api/users/login', async (req, res) => {
+    const { id, password } = req.body;
+    const u = await prisma.user.findUnique({ where: { id: parseInt(id) } });
+    if (!u) return res.status(404).json({ error: 'User not found' });
+    if (u.password && u.password !== password) return res.status(401).json({ error: 'Invalid password' });
+    res.json({ success: true, id: u.id, name: u.name });
+});
+
+// Sessions API
 app.get('/api/sessions', async (req, res) => {
+    const userId = parseInt(req.query.userId);
+    if (!userId) return res.status(400).json({ error: 'userId required' });
     const sessions = await prisma.session.findMany({
+        where: { userId },
         orderBy: { ts: 'desc' },
     });
     res.json(sessions);
 });
 
-// 3. API: Save a session
 app.post('/api/sessions', async (req, res) => {
-    const { category, duration, note } = req.body;
+    const { category, duration, note, userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
     const newSession = await prisma.session.create({
         data: {
+            userId: parseInt(userId),
             category,
             duration: parseInt(duration),
             note,
@@ -57,7 +128,6 @@ app.post('/api/sessions', async (req, res) => {
     res.json(newSession);
 });
 
-// 3.5 API: Update a session note
 app.put('/api/sessions/:id', async (req, res) => {
     const { note } = req.body;
     const updated = await prisma.session.update({
@@ -67,22 +137,24 @@ app.put('/api/sessions/:id', async (req, res) => {
     res.json(updated);
 });
 
-// 4. API: Delete a session
 app.delete('/api/sessions/:id', async (req, res) => {
     await prisma.session.delete({ where: { id: parseInt(req.params.id) } });
     res.json({ success: true });
 });
 
-// API: Category CRUD
+// Categories API
 app.get('/api/categories', async (req, res) => {
-    const categories = await prisma.category.findMany();
+    const userId = parseInt(req.query.userId);
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const categories = await prisma.category.findMany({ where: { userId } });
     res.json(categories);
 });
 
 app.post('/api/categories', async (req, res) => {
     try {
-        const { name, color } = req.body;
-        const cat = await prisma.category.create({ data: { name, color } });
+        const { name, color, userId } = req.body;
+        if (!userId) return res.status(400).json({ error: 'userId required' });
+        const cat = await prisma.category.create({ data: { name, color, userId: parseInt(userId) } });
         res.json(cat);
     } catch (e) {
         res.status(400).json({ error: 'Failed to create category' });
@@ -90,106 +162,104 @@ app.post('/api/categories', async (req, res) => {
 });
 
 app.delete('/api/categories/:id', async (req, res) => {
-    try {
-        await prisma.category.delete({ where: { id: parseInt(req.params.id) } });
-        res.json({ success: true });
-    } catch (e) {
-        res.status(400).json({ error: 'Failed to delete category' });
-    }
+    await prisma.category.delete({ where: { id: parseInt(req.params.id) } });
+    res.json({ success: true });
 });
 
-// 5. In-Memory Active Timer State
-// state: 'idle' | 'running' | 'paused' | 'stopped'
-let activeTimer = { state: 'idle', elapsed: 0, startTs: null, category: null, pausedAt: null, note: '', lastModified: Date.now() };
-
+// Timer API
 app.get('/api/timer', (req, res) => {
-    res.json(activeTimer);
+    const userId = req.query.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    res.json(getTimer(userId));
 });
 
 app.post('/api/timer', (req, res) => {
-    activeTimer = { ...req.body, lastModified: Date.now() };
-    res.json({ success: true, lastModified: activeTimer.lastModified });
+    const { userId, state, elapsed, startTs, pausedAt, category, note } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    
+    activeTimers[userId] = { state, elapsed, startTs, pausedAt, category, note, lastModified: Date.now() };
+    lastFlush = 0; flushTimers(); // Force flush immediately on state saves
+    res.json({ success: true, lastModified: activeTimers[userId].lastModified });
 });
 
 // Background Task: Auto-save logic
 setInterval(async () => {
     const now = new Date();
-    // 11:59 PM auto-save logic
     const is1159PM = now.getHours() === 23 && now.getMinutes() === 59 && now.getSeconds() === 0;
 
-    if (is1159PM) {
-        let durationToSave = activeTimer.elapsed;
-        if (activeTimer.state === 'running' && activeTimer.startTs) {
-            durationToSave += Date.now() - activeTimer.startTs;
-        }
-
-        const durationSecs = Math.floor(durationToSave / 1000);
+    for (const [uidStr, t] of Object.entries(activeTimers)) {
+        const userId = parseInt(uidStr);
         
-        if (durationSecs > 0 && activeTimer.category) {
-            try {
-                await prisma.session.create({
-                    data: {
-                        category: activeTimer.category,
-                        duration: durationSecs,
-                        note: activeTimer.note,
-                        ts: new Date(),
-                    },
-                });
-                console.log('Saved session at 11:59 PM');
-                
-                if (activeTimer.state === 'running') {
-                    // rolling over into the new day
-                    activeTimer.elapsed = 0;
-                    activeTimer.startTs = Date.now();
-                } else {
-                    activeTimer.state = 'idle';
-                    activeTimer.elapsed = 0;
-                    activeTimer.startTs = null;
-                    activeTimer.pausedAt = null;
-                    activeTimer.note = '';
-                }
-                activeTimer.lastModified = Date.now();
-            } catch (e) {
-                console.error("Failed 11:59PM auto-save", e);
+        if (is1159PM) {
+            let durationToSave = t.elapsed;
+            if (t.state === 'running' && t.startTs) {
+                durationToSave += Date.now() - t.startTs;
             }
-        }
-    }
 
-    // 20-minute pause auto-save logic
-    if (activeTimer.state === 'paused' && activeTimer.pausedAt) {
-        const pausedFor = Date.now() - activeTimer.pausedAt;
-        if (pausedFor >= 20 * 60 * 1000) { // 20 minutes
-            const durationSecs = Math.floor(activeTimer.elapsed / 1000);
-            if (durationSecs > 0 && activeTimer.category) {
+            const durationSecs = Math.floor(durationToSave / 1000);
+            
+            if (durationSecs > 0 && t.category) {
                 try {
                     await prisma.session.create({
                         data: {
-                            category: activeTimer.category,
+                            userId,
+                            category: t.category,
                             duration: durationSecs,
-                            note: activeTimer.note,
-                            ts: new Date()
-                        }
+                            note: t.note,
+                            ts: new Date(),
+                        },
                     });
-                    console.log('Auto-saved paused session after 20 mins');
+                    
+                    if (t.state === 'running') {
+                        t.elapsed = 0;
+                        t.startTs = Date.now();
+                    } else {
+                        t.state = 'idle';
+                        t.elapsed = 0;
+                        t.startTs = null;
+                        t.pausedAt = null;
+                        t.note = '';
+                    }
+                    t.lastModified = Date.now();
                 } catch (e) {
-                    console.error("Failed pause auto-save", e);
+                    console.error("Failed 11:59PM auto-save", e);
                 }
             }
-            activeTimer.state = 'idle';
-            activeTimer.elapsed = 0;
-            activeTimer.startTs = null;
-            activeTimer.pausedAt = null;
-            activeTimer.note = '';
-            activeTimer.lastModified = Date.now();
+        }
+
+        // 20-minute pause auto-save
+        if (t.state === 'paused' && t.pausedAt) {
+            const pausedFor = Date.now() - t.pausedAt;
+            if (pausedFor >= 20 * 60 * 1000) {
+                const durationSecs = Math.floor(t.elapsed / 1000);
+                if (durationSecs > 0 && t.category) {
+                    try {
+                        await prisma.session.create({
+                            data: {
+                                userId,
+                                category: t.category,
+                                duration: durationSecs,
+                                note: t.note,
+                                ts: new Date()
+                            }
+                        });
+                    } catch (e) {
+                        console.error("Failed pause auto-save", e);
+                    }
+                }
+                t.state = 'idle';
+                t.elapsed = 0;
+                t.startTs = null;
+                t.pausedAt = null;
+                t.note = '';
+                t.lastModified = Date.now();
+            }
         }
     }
+    flushTimers();
 }, 1000);
 
-// Route everything else to index.html
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+// Route everything else
+app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-app.listen(PORT, () => {
-    console.log(`Server running at http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
