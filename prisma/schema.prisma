@@ -14,12 +14,13 @@ model User {
 }
 
 model Session {
-  id       Int      @id @default(autoincrement())
-  userId   Int      @default(1)
-  category String
-  duration Int
-  note     String?
-  ts       DateTime @default(now())
+  id        Int       @id @default(autoincrement())
+  userId    Int       @default(1)
+  category  String
+  duration  Int
+  note      String?
+  ts        DateTime  @default(now())
+  startTime DateTime?
 }
 
 model Category {

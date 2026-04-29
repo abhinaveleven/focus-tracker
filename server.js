@@ -93,7 +93,7 @@ function flushTimers() {
 
 function getTimer(userIdStr) {
     if (!activeTimers[userIdStr]) {
-        activeTimers[userIdStr] = { state: 'idle', elapsed: 0, startTs: null, category: null, pausedAt: null, note: '', lastModified: Date.now() };
+        activeTimers[userIdStr] = { state: 'idle', elapsed: 0, startTs: null, absoluteStartTs: null, category: null, pausedAt: null, note: '', lastModified: Date.now() };
     }
     return activeTimers[userIdStr];
 }
@@ -137,7 +137,7 @@ app.get('/api/sessions', async (req, res) => {
 });
 
 app.post('/api/sessions', async (req, res) => {
-    const { category, duration, note, userId } = req.body;
+    const { category, duration, note, userId, startTime } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const newSession = await prisma.session.create({
         data: {
@@ -146,6 +146,7 @@ app.post('/api/sessions', async (req, res) => {
             duration: parseInt(duration),
             note,
             ts: new Date(),
+            startTime: startTime ? new Date(startTime) : new Date(),
         },
     });
     res.json(newSession);
@@ -205,10 +206,10 @@ app.get('/api/timer', (req, res) => {
 });
 
 app.post('/api/timer', (req, res) => {
-    const { userId, state, elapsed, startTs, pausedAt, category, note } = req.body;
+    const { userId, state, elapsed, startTs, absoluteStartTs, pausedAt, category, note } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
     
-    activeTimers[userId] = { state, elapsed, startTs, pausedAt, category, note, lastModified: Date.now() };
+    activeTimers[userId] = { state, elapsed, startTs, absoluteStartTs, pausedAt, category, note, lastModified: Date.now() };
     lastFlush = 0; flushTimers(); // Force flush immediately on state saves
     res.json({ success: true, lastModified: activeTimers[userId].lastModified });
 });
@@ -238,16 +239,19 @@ setInterval(async () => {
                             duration: durationSecs,
                             note: t.note,
                             ts: new Date(),
+                            startTime: t.absoluteStartTs ? new Date(t.absoluteStartTs) : new Date(),
                         },
                     });
                     
                     if (t.state === 'running') {
                         t.elapsed = 0;
                         t.startTs = Date.now();
+                        t.absoluteStartTs = Date.now();
                     } else {
                         t.state = 'idle';
                         t.elapsed = 0;
                         t.startTs = null;
+                        t.absoluteStartTs = null;
                         t.pausedAt = null;
                         t.note = '';
                     }
@@ -271,7 +275,8 @@ setInterval(async () => {
                                 category: t.category,
                                 duration: durationSecs,
                                 note: t.note,
-                                ts: new Date()
+                                ts: new Date(t.pausedAt),
+                                startTime: t.absoluteStartTs ? new Date(t.absoluteStartTs) : new Date(t.pausedAt - durationSecs * 1000)
                             }
                         });
                     } catch (e) {
@@ -281,6 +286,7 @@ setInterval(async () => {
                 t.state = 'idle';
                 t.elapsed = 0;
                 t.startTs = null;
+                t.absoluteStartTs = null;
                 t.pausedAt = null;
                 t.note = '';
                 t.lastModified = Date.now();

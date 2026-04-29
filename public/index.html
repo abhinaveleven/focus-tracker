@@ -443,6 +443,7 @@
             timerState: 'idle',
             elapsed: 0,
             startTs: null,
+            absoluteStartTs: null,
             pausedAt: null,
             category: null,
             note: '',
@@ -555,6 +556,7 @@
                     state.timerState = data.state;
                     state.elapsed = data.elapsed;
                     state.startTs = data.startTs;
+                    state.absoluteStartTs = data.absoluteStartTs;
                     state.pausedAt = data.pausedAt;
                     state.category = data.category;
                     state.note = data.note || '';
@@ -586,6 +588,7 @@
                         state: state.timerState,
                         elapsed: state.elapsed,
                         startTs: state.startTs,
+                        absoluteStartTs: state.absoluteStartTs,
                         pausedAt: state.pausedAt,
                         category: state.category,
                         note: state.note
@@ -647,7 +650,7 @@
                     await fetch('/api/sessions', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ category: state.category, duration: durSecs, note: state.note, userId: currentUserId })
+                        body: JSON.stringify({ category: state.category, duration: durSecs, note: state.note, userId: currentUserId, startTime: state.absoluteStartTs })
                     });
                 } catch(e) { console.error("Failed to save to server."); }
             }
@@ -655,6 +658,7 @@
             state.timerState = 'idle';
             state.elapsed = 0; 
             state.startTs = null; 
+            state.absoluteStartTs = null;
             state.pausedAt = null;
             state.note = '';
             document.getElementById('active-note').value = '';
@@ -703,6 +707,7 @@
             if (action === 'start') {
                 if (state.timerState === 'idle') {
                     state.elapsed = 0;
+                    state.absoluteStartTs = Date.now();
                 }
                 state.timerState = 'running';
                 state.startTs = Date.now();
@@ -728,7 +733,7 @@
         function fmtShort(s) {
             const h = Math.floor(s / 3600);
             const m = Math.floor((s % 3600) / 60);
-            return h > 0 ? `${h}h ${m}m` : `${m}m`;
+            return h > 0 ? `${h}h${m}m` : `${m}m`;
         }
 
         function renderDisplay() {
@@ -826,12 +831,25 @@
                 const catInfo = categories.find(c => c.name === s.category) || {};
                 const color = catInfo.color || '#555';
                 return `
-            <div class="sess-row" style="flex-wrap:wrap">
+            <div class="sess-row" style="flex-wrap:wrap; transition: background 0.2s; border-radius: 6px; padding: 12px; margin: -2px -12px; border-bottom: 1px solid var(--border);" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
               <div style="display:flex; width:100%; align-items:center; gap:10px">
                 <div class="dot" style="background:${color}"></div>
                 <div>
                   <div style="font-size:14px; text-transform:capitalize">${s.category}</div>
-                  <div style="font-size:11px; color:var(--text3)">${new Date(s.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                  <div style="font-size:11px; color:var(--text3)">
+                    ${(() => {
+                        const endD = new Date(s.ts);
+                        const startD = s.startTime ? new Date(s.startTime) : new Date(endD.getTime() - s.duration * 1000);
+                        const timeRangeStr = `${startD.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - ${endD.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+                        const clockDurSecs = Math.floor((endD.getTime() - startD.getTime()) / 1000);
+                        const wastedSecs = clockDurSecs - s.duration;
+                        let wastedHtml = '';
+                        if (wastedSecs >= 60) {
+                            wastedHtml = `<span style="background:rgba(248,113,113,0.15); color:#f87171; padding:2px 6px; border-radius:4px; font-weight:500; margin-left:6px;">+${fmtShort(wastedSecs)} wasted</span>`;
+                        }
+                        return `${timeRangeStr} ${wastedHtml}`;
+                    })()}
+                  </div>
                 </div>
                 <div class="sess-dur">${fmtShort(s.duration)}</div>
                 <button class="del" onclick="deleteSession(${s.id})">×</button>
