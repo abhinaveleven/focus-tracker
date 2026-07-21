@@ -1,0 +1,5 @@
+node_modules/
+.env
+.session_secret
+active_timers.json
+.DS_Store

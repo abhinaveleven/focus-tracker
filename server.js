@@ -2,12 +2,15 @@ const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const path = require('path');
 const fs = require('fs');
+const auth = require('./auth');
 
 const prisma = new PrismaClient();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+app.set('trust proxy', 1);
 app.use(express.json());
+app.use(auth.attachUser);
 
 // Seed data on startup
 const defaultCategories = [
@@ -48,6 +51,25 @@ async function seedUsersAndCategories() {
                 create: { id: 1, name: 'abhinav' }
             });
             console.log('Seeded default user abhinav.');
+        }
+
+        // Seeding writes an explicit id, which leaves the Postgres sequence
+        // behind and makes the next inserted user collide on the primary key.
+        await prisma.$executeRawUnsafe(
+            `SELECT setval(pg_get_serial_sequence('"User"', 'id'), COALESCE((SELECT MAX(id) FROM "User"), 1))`
+        );
+
+        // Lock the owner profile on first boot when OWNER_PASSWORD is supplied,
+        // so the app is never publicly readable between deploy and first login.
+        if (process.env.OWNER_PASSWORD) {
+            const owner = await prisma.user.findUnique({ where: { name: 'abhinav' } });
+            if (owner && (!owner.password || !owner.password.startsWith('scrypt$'))) {
+                await prisma.user.update({
+                    where: { id: owner.id },
+                    data: { password: auth.hashPassword(process.env.OWNER_PASSWORD) }
+                });
+                console.log('Owner profile locked from OWNER_PASSWORD.');
+            }
         }
 
         const catCount = await prisma.category.count();
@@ -102,15 +124,26 @@ function getTimer(userIdStr) {
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Users API
+// The profile list is what the lock screen picks from, so it stays readable.
+// It exposes only names and whether each profile is locked - never any data.
 app.get('/api/users', async (req, res) => {
     const users = await prisma.user.findMany();
     res.json(users.map(u => ({ id: u.id, name: u.name, hasPassword: !!u.password })));
 });
 
-app.post('/api/users', async (req, res) => {
+app.get('/api/users/me', async (req, res) => {
+    if (!req.userId) return res.status(401).json({ error: 'Not signed in' });
+    const u = await prisma.user.findUnique({ where: { id: req.userId } });
+    if (!u) return res.status(401).json({ error: 'Not signed in' });
+    res.json({ id: u.id, name: u.name, hasPassword: !!u.password });
+});
+
+app.post('/api/users', auth.requireAuth, async (req, res) => {
     const { name, password } = req.body;
     try {
-        const u = await prisma.user.create({ data: { name, password } });
+        const u = await prisma.user.create({
+            data: { name, password: password ? auth.hashPassword(password) : null }
+        });
         res.json({ id: u.id, name: u.name });
     } catch (e) {
         res.status(400).json({ error: 'Failed to create user. Name might be taken.' });
@@ -120,28 +153,62 @@ app.post('/api/users', async (req, res) => {
 app.post('/api/users/login', async (req, res) => {
     const { id, password } = req.body;
     const u = await prisma.user.findUnique({ where: { id: parseInt(id) } });
-    if (!u) return res.status(404).json({ error: 'User not found' });
-    if (u.password && u.password !== password) return res.status(401).json({ error: 'Invalid password' });
+    if (!u) return res.status(401).json({ error: 'Invalid password' });
+
+    const { ok, needsUpgrade } = auth.verifyPassword(password, u.password);
+    if (!ok) return res.status(401).json({ error: 'Invalid password' });
+
+    // Transparently re-store legacy plaintext passwords as scrypt hashes.
+    if (needsUpgrade) {
+        await prisma.user.update({
+            where: { id: u.id },
+            data: { password: auth.hashPassword(password || '') }
+        });
+    }
+
+    auth.setSessionCookie(req, res, u.id);
     res.json({ success: true, id: u.id, name: u.name });
 });
 
-// Sessions API
-app.get('/api/sessions', async (req, res) => {
-    const userId = parseInt(req.query.userId);
-    if (!userId) return res.status(400).json({ error: 'userId required' });
+app.post('/api/users/logout', (req, res) => {
+    auth.clearSessionCookie(res);
+    res.json({ success: true });
+});
+
+// Set or change the password on your own profile. Requires the current one
+// once a profile is locked.
+app.post('/api/users/password', auth.requireAuth, async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    const u = await prisma.user.findUnique({ where: { id: req.userId } });
+    if (!u) return res.status(401).json({ error: 'Not signed in' });
+
+    if (u.password && !auth.verifyPassword(currentPassword, u.password).ok) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+    if (!newPassword) return res.status(400).json({ error: 'New password required' });
+
+    await prisma.user.update({
+        where: { id: u.id },
+        data: { password: auth.hashPassword(newPassword) }
+    });
+    auth.setSessionCookie(req, res, u.id);
+    res.json({ success: true });
+});
+
+// Sessions API - the signed-in user is the only user these can touch.
+app.get('/api/sessions', auth.requireAuth, async (req, res) => {
     const sessions = await prisma.session.findMany({
-        where: { userId },
+        where: { userId: req.userId },
         orderBy: { ts: 'desc' },
     });
     res.json(sessions);
 });
 
-app.post('/api/sessions', async (req, res) => {
-    const { category, duration, note, userId, startTime } = req.body;
-    if (!userId) return res.status(400).json({ error: 'userId required' });
+app.post('/api/sessions', auth.requireAuth, async (req, res) => {
+    const { category, duration, note, startTime } = req.body;
     const newSession = await prisma.session.create({
         data: {
-            userId: parseInt(userId),
+            userId: req.userId,
             category,
             duration: parseInt(duration),
             note,
@@ -152,66 +219,68 @@ app.post('/api/sessions', async (req, res) => {
     res.json(newSession);
 });
 
-app.put('/api/sessions/:id', async (req, res) => {
+app.put('/api/sessions/:id', auth.requireAuth, async (req, res) => {
     const { note } = req.body;
-    const updated = await prisma.session.update({
-        where: { id: parseInt(req.params.id) },
+    const { count } = await prisma.session.updateMany({
+        where: { id: parseInt(req.params.id), userId: req.userId },
         data: { note }
     });
-    res.json(updated);
+    if (!count) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
 });
 
-app.delete('/api/sessions/:id', async (req, res) => {
-    await prisma.session.delete({ where: { id: parseInt(req.params.id) } });
+app.delete('/api/sessions/:id', auth.requireAuth, async (req, res) => {
+    const { count } = await prisma.session.deleteMany({
+        where: { id: parseInt(req.params.id), userId: req.userId }
+    });
+    if (!count) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
 });
 
 // Categories API
-app.get('/api/categories', async (req, res) => {
-    const userId = parseInt(req.query.userId);
-    if (!userId) return res.status(400).json({ error: 'userId required' });
-    const categories = await prisma.category.findMany({ where: { userId } });
+app.get('/api/categories', auth.requireAuth, async (req, res) => {
+    const categories = await prisma.category.findMany({ where: { userId: req.userId } });
     res.json(categories);
 });
 
-app.post('/api/categories', async (req, res) => {
+app.post('/api/categories', auth.requireAuth, async (req, res) => {
     try {
-        const { name, color, userId } = req.body;
-        if (!userId) return res.status(400).json({ error: 'userId required' });
-        
+        const { name, color } = req.body;
+
         const existing = await prisma.category.findFirst({
-            where: { userId: parseInt(userId), name }
+            where: { userId: req.userId, name }
         });
         if (existing) {
             return res.json(existing);
         }
 
-        const cat = await prisma.category.create({ data: { name, color, userId: parseInt(userId) } });
+        const cat = await prisma.category.create({ data: { name, color, userId: req.userId } });
         res.json(cat);
     } catch (e) {
         res.status(400).json({ error: 'Failed to create category' });
     }
 });
 
-app.delete('/api/categories/:id', async (req, res) => {
-    await prisma.category.delete({ where: { id: parseInt(req.params.id) } });
+app.delete('/api/categories/:id', auth.requireAuth, async (req, res) => {
+    const { count } = await prisma.category.deleteMany({
+        where: { id: parseInt(req.params.id), userId: req.userId }
+    });
+    if (!count) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
 });
 
 // Timer API
-app.get('/api/timer', (req, res) => {
-    const userId = req.query.userId;
-    if (!userId) return res.status(400).json({ error: 'userId required' });
-    res.json(getTimer(userId));
+app.get('/api/timer', auth.requireAuth, (req, res) => {
+    res.json(getTimer(String(req.userId)));
 });
 
-app.post('/api/timer', (req, res) => {
-    const { userId, state, elapsed, startTs, absoluteStartTs, pausedAt, category, note } = req.body;
-    if (!userId) return res.status(400).json({ error: 'userId required' });
-    
-    activeTimers[userId] = { state, elapsed, startTs, absoluteStartTs, pausedAt, category, note, lastModified: Date.now() };
+app.post('/api/timer', auth.requireAuth, (req, res) => {
+    const { state, elapsed, startTs, absoluteStartTs, pausedAt, category, note } = req.body;
+    const key = String(req.userId);
+
+    activeTimers[key] = { state, elapsed, startTs, absoluteStartTs, pausedAt, category, note, lastModified: Date.now() };
     lastFlush = 0; flushTimers(); // Force flush immediately on state saves
-    res.json({ success: true, lastModified: activeTimers[userId].lastModified });
+    res.json({ success: true, lastModified: activeTimers[key].lastModified });
 });
 
 // Background Task: Auto-save logic

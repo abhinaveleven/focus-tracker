@@ -8,6 +8,11 @@ services:
     environment:
       - DATABASE_URL=postgresql://focus_user:focus_pass@db:5432/focus_db
       - TZ=America/New_York
+      # Both come from a local .env file (gitignored).
+      # OWNER_PASSWORD locks the owner profile on first boot only.
+      # SESSION_SECRET keeps logins alive across rebuilds.
+      - OWNER_PASSWORD=${OWNER_PASSWORD:-}
+      - SESSION_SECRET=${SESSION_SECRET:-}
     command: >
       sh -c "sleep 5 && npx prisma db push && node server.js"
     depends_on:

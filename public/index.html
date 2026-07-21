@@ -381,16 +381,85 @@
         }
         .user-item:hover { background: var(--bg3); color: var(--text); }
         .user-item.active { background: var(--accent-dim); color: var(--accent); }
+
+        /* Lock screen */
+        #lock-screen {
+            position: fixed;
+            inset: 0;
+            z-index: 999;
+            background: var(--bg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        #lock-screen.hidden { display: none; }
+        .lock-card { width: 100%; max-width: 340px; text-align: center; }
+        .lock-card h2 { margin: 0 0 4px; font-size: 20px; color: var(--text); }
+        .lock-card p { margin: 0 0 20px; color: var(--text2); font-size: 13px; }
+        .lock-profiles { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+        .lock-profile {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--bg2);
+            color: var(--text);
+            font: inherit;
+            cursor: pointer;
+        }
+        .lock-profile:hover { border-color: var(--border2); }
+        .lock-profile.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+        #lock-password {
+            width: 100%;
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--bg2);
+            color: var(--text);
+            font: inherit;
+            margin-bottom: 10px;
+        }
+        #lock-submit {
+            width: 100%;
+            padding: 12px;
+            border: 0;
+            border-radius: var(--radius);
+            background: var(--accent);
+            color: #0f0f0f;
+            font: inherit;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        #lock-submit:disabled { opacity: 0.5; cursor: default; }
+        #lock-error { color: #f87171; font-size: 13px; min-height: 18px; margin-top: 10px; }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 
 <body>
+    <div id="lock-screen">
+        <div class="lock-card">
+            <h2>Focus Tracker</h2>
+            <p>Select a profile to continue</p>
+            <div class="lock-profiles" id="lock-profiles"></div>
+            <form id="lock-form" onsubmit="submitUnlock(event)">
+                <input type="password" id="lock-password" placeholder="Password" autocomplete="current-password" />
+                <button type="submit" id="lock-submit">Unlock</button>
+            </form>
+            <div id="lock-error"></div>
+        </div>
+    </div>
+
     <button class="user-menu-btn" onclick="toggleUsers()" id="btn-current-user">👤 Select User</button>
     <div class="user-dropdown" id="user-menu">
         <div id="users-list"></div>
         <hr style="border:0; border-top:1px solid var(--border); margin:8px 0;" />
         <button class="user-item" style="width:100%; text-align:center; background:transparent; border:none;" onclick="addUser()">+ Add User</button>
+        <button class="user-item" style="width:100%; text-align:center; background:transparent; border:none;" onclick="changePassword()">🔑 Set / Change Password</button>
+        <button class="user-item" style="width:100%; text-align:center; background:transparent; border:none;" onclick="logout()">🚪 Lock</button>
     </div>
 
     <div class="app">
@@ -436,7 +505,23 @@
     </div>
 
     <script>
-        let currentUserId = localStorage.getItem('focusUserId') || null;
+        // Identity comes from the server session, never from localStorage.
+        let currentUserId = null;
+
+        // If a session expires or is revoked mid-use, drop straight back to the
+        // lock screen instead of silently showing a half-broken page.
+        const rawFetch = window.fetch.bind(window);
+        window.fetch = async (input, init) => {
+            const res = await rawFetch(input, init);
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            if (res.status === 401 && url.startsWith('/api/') && !url.includes('/api/users/me') && !url.includes('/api/users/login')) {
+                if (currentUserId !== null) {
+                    currentUserId = null;
+                    showLockScreen();
+                }
+            }
+            return res;
+        };
         let usersList = [];
 
         let state = {
@@ -458,16 +543,114 @@
         let serverLastModified = 0;
 
         // --- User Mngt ---
+        // currentUserId is only a UI hint. The server derives the real identity
+        // from the signed session cookie, so it can never be spoofed from here.
+        let selectedProfileId = null;
+
         async function loadUsers() {
             const res = await fetch('/api/users');
             usersList = await res.json();
-            
-            if (!currentUserId && usersList.length > 0) {
-                // Not enforcing default login since passwords exist.
-                renderUserMenu();
-            } else if (currentUserId) {
-                renderUserMenu();
+            renderUserMenu();
+            renderLockProfiles();
+        }
+
+        function renderLockProfiles() {
+            const el = document.getElementById('lock-profiles');
+            el.innerHTML = usersList.map(u => `
+                <button type="button" class="lock-profile ${u.id === selectedProfileId ? 'active' : ''}"
+                        onclick="selectProfile(${u.id})">
+                    <span>${u.name}</span>
+                    <span>${u.hasPassword ? '🔒' : '🔓'}</span>
+                </button>
+            `).join('');
+        }
+
+        function selectProfile(id) {
+            selectedProfileId = id;
+            renderLockProfiles();
+            document.getElementById('lock-error').textContent = '';
+            const pw = document.getElementById('lock-password');
+            pw.value = '';
+            pw.focus();
+        }
+
+        function showLockScreen() {
+            currentUserId = null;
+            document.getElementById('lock-screen').classList.remove('hidden');
+            if (ticker) { clearInterval(ticker); ticker = null; }
+        }
+
+        function hideLockScreen() {
+            document.getElementById('lock-screen').classList.add('hidden');
+            document.getElementById('lock-password').value = '';
+        }
+
+        async function submitUnlock(e) {
+            e.preventDefault();
+            const err = document.getElementById('lock-error');
+            if (!selectedProfileId) { err.textContent = 'Pick a profile first.'; return; }
+
+            const btn = document.getElementById('lock-submit');
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/users/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: selectedProfileId,
+                        password: document.getElementById('lock-password').value
+                    })
+                });
+                if (!res.ok) { err.textContent = 'Incorrect password.'; return; }
+                const data = await res.json();
+                currentUserId = data.id;
+                err.textContent = '';
+                hideLockScreen();
+                await startSession();
+            } finally {
+                btn.disabled = false;
             }
+        }
+
+        // Loads everything for the signed-in profile.
+        async function startSession() {
+            serverLastModified = 0;
+            state.timerState = 'idle';
+            state.elapsed = 0;
+            await loadUsers();
+            await loadCategories();
+            await loadSessions();
+            await syncTimerState();
+            renderUserMenu();
+        }
+
+        async function logout() {
+            await fetch('/api/users/logout', { method: 'POST' });
+            state.sessions = [];
+            categories = [];
+            localStorage.removeItem('focusUserId');
+            document.getElementById('user-menu').style.display = 'none';
+            renderAll();
+            showLockScreen();
+            await loadUsers();
+        }
+
+        async function changePassword() {
+            const current = prompt('Current password (leave blank if none):') ?? null;
+            if (current === null) return;
+            const next = prompt('New password:');
+            if (!next) return;
+            const res = await fetch('/api/users/password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ currentPassword: current, newPassword: next })
+            });
+            if (!res.ok) {
+                const e = await res.json().catch(() => ({}));
+                return alert(e.error || 'Failed to change password.');
+            }
+            alert('Password updated.');
+            await loadUsers();
         }
 
         function toggleUsers() {
@@ -493,36 +676,18 @@
             `).join('');
         }
 
+        // Switching profiles always goes back through the lock screen, so every
+        // profile change requires the password again.
         async function switchUser(id) {
-            const u = usersList.find(x => x.id == id);
-            if (!u) return;
-
-            if (u.id != currentUserId) {
-                if (u.hasPassword) {
-                    const pwd = prompt(`Enter password for ${u.name}:`);
-                    if (pwd === null) return;
-                    const res = await fetch('/api/users/login', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({id, password: pwd})
-                    });
-                    if (!res.ok) return alert("Incorrect password");
-                }
-                
-                localStorage.setItem('focusUserId', id);
-                currentUserId = id;
-                serverLastModified = 0; 
-                state.timerState = 'idle';
-                state.elapsed = 0;
-                
-                if (ticker) { clearInterval(ticker); ticker = null; }
-                document.getElementById('user-menu').style.display = 'none';
-                
-                await loadCategories();
-                await loadSessions();
-                await syncTimerState();
-                renderUserMenu();
-            }
+            if (id == currentUserId) return;
+            await fetch('/api/users/logout', { method: 'POST' });
+            currentUserId = null;
+            state.sessions = [];
+            categories = [];
+            document.getElementById('user-menu').style.display = 'none';
+            renderAll();
+            showLockScreen();
+            selectProfile(id);
         }
 
         async function addUser() {
@@ -535,10 +700,8 @@
                 body: JSON.stringify({name: name.toLowerCase(), password: pwd || null})
             });
             if (!res.ok) return alert("Failed to add user. Name might be taken.");
-            
+
             await loadUsers();
-            const data = await res.json();
-            switchUser(data.id);
         }
 
         // --- Sync ---
@@ -549,7 +712,7 @@
                 return;
             }
             try {
-                const res = await fetch(`/api/timer?userId=${currentUserId}`);
+                const res = await fetch('/api/timer');
                 const data = await res.json();
                 if (data.lastModified > serverLastModified) {
                     serverLastModified = data.lastModified;
@@ -584,7 +747,6 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        userId: currentUserId,
                         state: state.timerState,
                         elapsed: state.elapsed,
                         startTs: state.startTs,
@@ -602,7 +764,7 @@
         // --- API Calls ---
         async function loadCategories() {
             if (!currentUserId) { categories = []; renderCatPills(); renderHistory(); return; }
-            const res = await fetch(`/api/categories?userId=${currentUserId}`);
+            const res = await fetch('/api/categories');
             categories = await res.json();
             renderCatPills();
             renderHistory();
@@ -616,7 +778,7 @@
             await fetch('/api/categories', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name.toLowerCase(), color, userId: currentUserId })
+                body: JSON.stringify({ name: name.toLowerCase(), color })
             });
             await loadCategories();
         }
@@ -634,7 +796,7 @@
         async function loadSessions() {
             if (!currentUserId) { state.sessions = []; renderAll(); return; }
             try {
-                const res = await fetch(`/api/sessions?userId=${currentUserId}`);
+                const res = await fetch('/api/sessions');
                 state.sessions = await res.json();
                 renderAll();
             } catch (e) { console.error("Sync failed", e); }
@@ -650,7 +812,7 @@
                     await fetch('/api/sessions', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ category: state.category, duration: durSecs, note: state.note, userId: currentUserId, startTime: state.absoluteStartTs })
+                        body: JSON.stringify({ category: state.category, duration: durSecs, note: state.note, startTime: state.absoluteStartTs })
                     });
                 } catch(e) { console.error("Failed to save to server."); }
             }
@@ -959,14 +1121,26 @@
         setInterval(updateDateTime, 1000);
         updateDateTime();
 
-        // Initial Load
-        loadUsers().then(() => {
-            loadCategories().then(() => {
-                syncTimerState();
-                setInterval(syncTimerState, 1500);
-                loadSessions();
-            });
-        });
+        // Initial Load - the lock screen stays up until the server confirms a
+        // valid session cookie, so no data is ever fetched while locked.
+        (async () => {
+            await loadUsers();
+            let me = null;
+            try {
+                const res = await fetch('/api/users/me');
+                if (res.ok) me = await res.json();
+            } catch (e) { /* treat as locked */ }
+
+            if (me) {
+                currentUserId = me.id;
+                hideLockScreen();
+                await startSession();
+            } else {
+                showLockScreen();
+            }
+
+            setInterval(() => { if (currentUserId) syncTimerState(); }, 1500);
+        })();
     </script>
 </body>
 
