@@ -157,18 +157,24 @@
     <div class="wrap">
         <a class="back" href="/">← Focus Tracker</a>
         <h1>Focus Groove</h1>
-        <p class="sub">An endless, original minor-key bass-and-guitar build. Generated live, so the solo never repeats exactly.</p>
+        <p class="sub" id="sub"></p>
 
         <div class="card">
-            <button class="play" id="play" onclick="toggle()">▶ Play</button>
+            <label style="margin-top:0">Track</label>
+            <div class="modes" id="tracks">
+                <button class="active" data-track="groove" onclick="setTrack('groove')">D-minor groove</button>
+                <button data-track="riff" onclick="setTrack('riff')">E-minor riff</button>
+            </div>
+
+            <button class="play" id="play" onclick="toggle()" style="margin-top:1rem">▶ Play</button>
 
             <div class="section"><span>Section</span><b id="section">—</b></div>
             <div class="steps" id="steps"></div>
 
             <label>Arrangement</label>
-            <div class="modes">
+            <div class="modes" id="modes">
                 <button class="active" data-mode="build" onclick="setMode('build')">Build</button>
-                <button data-mode="groove" onclick="setMode('groove')">Groove only</button>
+                <button data-mode="groove" onclick="setMode('groove')">Band only</button>
                 <button data-mode="solo" onclick="setMode('solo')">Solo</button>
             </div>
 
@@ -193,9 +199,22 @@
         // D minor pentatonic for the lead, D4..A5
         const LEAD_SCALE = [62, 65, 67, 69, 72, 74, 77, 79, 81];
 
+        // ---- Riff track (E minor, ~152 BPM) ----
+        // A 4-bar riff of straight 8th-note chugs, one guitar root per 8th:
+        // E pedal, a D (or F#-G) pickup into A, then B C C B A G A B.
+        const E = 40, Fs = 42, G = 43, A = 45, B = 47, C = 48, D = 38;
+        const RIFF = [
+            E, E, E, E, E, E, E, E, E, E, E, E, E, E, D, D,
+            A, A, A, A, A, A, A, B, C, C, B, A, G, A, B, B,
+        ];
+        // Every other pass the pickup climbs F#-G instead of dropping to D
+        const RIFF_PICKUP_ALT = [Fs, G];
+        // E minor pentatonic for the lead, E4..B5
+        const RIFF_LEAD_SCALE = [64, 67, 69, 71, 74, 76, 79, 81, 83];
+
         let ctx, master, out, reverbSend, rhythmIn, leadIn;
         let playing = false, nextTime = 0, step = 0, bar = 0, worker;
-        let bpm = 116, mode = 'build', volume = 0.7;
+        let bpm = 116, mode = 'build', volume = 0.7, track = 'groove';
         let leadQueue = [];
         const uiQueue = [];
 
@@ -298,6 +317,15 @@
             n.connect(f).connect(g).connect(master); n.start(t); n.stop(t + 0.06);
         }
 
+        function crash(t) {
+            const n = noise(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+            f.type = 'highpass'; f.frequency.value = 5000;
+            g.gain.setValueAtTime(0.12, t); g.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
+            n.loop = true;
+            n.connect(f).connect(g); g.connect(master); g.connect(reverbSend);
+            n.start(t); n.stop(t + 1.5);
+        }
+
         function bass(t, note, dur) {
             const f = midi(note);
             const o1 = ctx.createOscillator(), o2 = ctx.createOscillator();
@@ -370,7 +398,7 @@
         ];
 
         // Builds a two-bar phrase as [{step, note, len, bend}] where steps are 16ths from phrase start
-        function makePhrase(intensity) {
+        function makePhrase(intensity, scale = LEAD_SCALE, landing = [62, 69, 74, 81]) {
             const phrase = [];
             let pos = Math.random() < 0.5 ? 0 : 2;
             while (pos < 28) {
@@ -379,16 +407,16 @@
                     if (pos >= 30) break;
                     const r = Math.random();
                     const jump = r < 0.45 ? 1 : r < 0.8 ? -1 : r < 0.9 ? 2 : -2;
-                    leadIdx = Math.max(0, Math.min(LEAD_SCALE.length - 1, leadIdx + jump));
+                    leadIdx = Math.max(0, Math.min(scale.length - 1, leadIdx + jump));
                     if (intensity > 0.6 && leadIdx < 3 && Math.random() < 0.4) leadIdx += 2;
-                    phrase.push({ step: pos, note: LEAD_SCALE[leadIdx], len, bend: len >= 4 && Math.random() < 0.45 });
+                    phrase.push({ step: pos, note: scale[leadIdx], len, bend: len >= 4 && Math.random() < 0.45 });
                     pos += len;
                 }
                 if (Math.random() < 0.55 - intensity * 0.3) pos += 2; // breathe
             }
-            // land on a chord tone of D minor for the last note
+            // land on a chord tone of the key for the last note
             const last = phrase[phrase.length - 1];
-            if (last) { last.note = [62, 69, 74, 81][Math.floor(Math.random() * 4)]; last.len = Math.max(last.len, 4); }
+            if (last) { last.note = landing[Math.floor(Math.random() * landing.length)]; last.len = Math.max(last.len, 4); }
             return phrase;
         }
 
@@ -402,9 +430,75 @@
             return c < 8 ? 'groove' : 'solo';
         }
 
-        const SECTION_NAMES = { intro: 'Bass & pulse', groove: 'Groove', solo: 'Guitar solo' };
+        const SECTION_NAMES = {
+            intro: 'Bass & pulse', groove: 'Groove', solo: 'Guitar solo',
+            riffIntro: 'Riff alone', riffBuild: 'Band comes in', riffFull: 'Full riff',
+            riffSolo: 'Riff + lead', riffBreak: 'Breakdown',
+        };
+
+        // 'build': 4 bars riff alone, 4 bars band building, then a 32-bar cycle forever:
+        // 8 full, 16 with a lead on top, 4 full, 4 breakdown
+        function riffSectionFor(b) {
+            if (mode === 'groove') return 'riffFull';
+            if (mode === 'solo') return 'riffSolo';
+            if (b < 4) return 'riffIntro';
+            if (b < 8) return 'riffBuild';
+            const c = (b - 8) % 32;
+            return c < 8 ? 'riffFull' : c < 24 ? 'riffSolo' : c < 28 ? 'riffFull' : 'riffBreak';
+        }
+
+        function scheduleRiffStep(t) {
+            const section = riffSectionFor(bar);
+            const s = step;
+            const stepDur = 60 / bpm / 4;
+
+            // drums: straight rock beat, kick 1 & 3, snare 2 & 4, 8th hats
+            if (section === 'riffIntro') {
+                if (s % 4 === 0 && bar >= 2) hat(t, false);
+            } else if (section === 'riffBuild') {
+                if (s % 4 === 0) kick(t);
+                if (bar >= 6 && (s === 4 || s === 12)) snare(t);
+                if (bar === 7 && s >= 12) snare(t);   // fill into the full riff
+                if (s % 2 === 0) hat(t, s % 4 === 0);
+            } else if (section === 'riffBreak') {
+                if (s % 2 === 0) hat(t, s % 4 === 0);
+            } else {
+                if (s === 0 && bar % 4 === 0) crash(t);
+                if (s === 0 || s === 8 || (s === 10 && bar % 2 === 1)) kick(t);
+                if (s === 4 || s === 12) snare(t);
+                if (s % 2 === 0 && !(s === 0 && bar % 4 === 0)) hat(t, s % 4 === 0);
+            }
+
+            // riff: one chug per 8th, accented wherever the root changes
+            if (s % 2 === 0) {
+                const i = (bar % 4) * 8 + s / 2;
+                let root = RIFF[i];
+                if ((i === 14 || i === 15) && Math.floor(bar / 4) % 2 === 1) root = RIFF_PICKUP_ALT[i - 14];
+                const prev = i === 0 ? null : RIFF[i - 1];
+                const accent = root !== prev && root !== E;
+                powerChord(t, root, !accent, stepDur * 2);
+                if (section !== 'riffIntro') bass(t, root - 12, stepDur * 1.9);
+            }
+
+            // lead: 4-bar phrases at half the solo's note density, so it stays melodic
+            if (section === 'riffSolo') {
+                const soloBar = mode === 'solo' ? bar : (bar - 8) % 32 - 8;
+                if (s === 0 && soloBar % 4 === 0) {
+                    const intensity = mode === 'solo' ? 0.6 : soloBar / 16;
+                    leadQueue = makePhrase(intensity, RIFF_LEAD_SCALE, [64, 71, 76, 83])
+                        .map(n => ({ ...n, step: n.step * 2, len: n.len * 2, bar: bar }));
+                }
+                const local = (bar - (leadQueue[0]?.bar ?? bar)) * 16 + s;
+                for (const n of leadQueue) {
+                    if (n.step === local) leadNote(t, n.note, n.len * stepDur * 0.92, n.bend);
+                }
+            }
+
+            uiQueue.push({ t, s, section });
+        }
 
         function scheduleStep(t) {
+            if (track === 'riff') return scheduleRiffStep(t);
             const section = sectionFor(bar);
             const root = PROGRESSION[bar % 4];
             const s = step;
@@ -500,7 +594,24 @@
 
         function setMode(m) {
             mode = m;
-            document.querySelectorAll('.modes button').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+            document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+        }
+
+        const TRACKS = {
+            groove: { bpm: 116, min: 90, max: 140, sub: 'An endless, original minor-key bass-and-guitar build. Generated live, so the solo never repeats exactly.' },
+            riff: { bpm: 152, min: 120, max: 170, sub: 'A chugging E-minor riff looped into a full arrangement: riff alone, band, lead, breakdown, and around again.' },
+        };
+
+        function setTrack(name) {
+            track = name;
+            const cfg = TRACKS[name];
+            document.querySelectorAll('#tracks button').forEach(b => b.classList.toggle('active', b.dataset.track === name));
+            document.getElementById('sub').textContent = cfg.sub;
+            const tempo = document.getElementById('tempo');
+            tempo.min = cfg.min; tempo.max = cfg.max; tempo.value = cfg.bpm;
+            setTempo(cfg.bpm);
+            // restart the arrangement from the top on the next step
+            step = 0; bar = 0; leadIdx = 4; leadQueue = [];
         }
 
         function setVolume(v) {
@@ -513,6 +624,8 @@
             document.getElementById('bpm-label').textContent = v;
             if (leadIn) leadIn.delay.delayTime.setTargetAtTime((60 / bpm) * 0.75, ctx.currentTime, 0.1);
         }
+
+        setTrack('groove');
     </script>
 </body>
 
