@@ -162,8 +162,8 @@
         <div class="card">
             <label style="margin-top:0">Track</label>
             <div class="modes" id="tracks">
-                <button class="active" data-track="groove" onclick="setTrack('groove')">D-minor groove</button>
-                <button data-track="riff" onclick="setTrack('riff')">E-minor riff</button>
+                <button class="active" data-track="groove" onclick="setTrack('groove')">Generated groove</button>
+                <button data-track="riff" onclick="setTrack('riff')">Recorded riff</button>
             </div>
 
             <button class="play" id="play" onclick="toggle()" style="margin-top:1rem">▶ Play</button>
@@ -172,17 +172,15 @@
             <div class="steps" id="steps"></div>
 
             <label>Arrangement</label>
-            <div class="modes" id="modes">
-                <button class="active" data-mode="build" onclick="setMode('build')">Build</button>
-                <button data-mode="groove" onclick="setMode('groove')">Band only</button>
-                <button data-mode="solo" onclick="setMode('solo')">Solo</button>
-            </div>
+            <div class="modes" id="modes"></div>
 
             <label for="vol">Volume</label>
             <input type="range" id="vol" min="0" max="100" value="70" oninput="setVolume(this.value)">
 
-            <label for="tempo">Tempo <span id="bpm-label">116</span> BPM</label>
-            <input type="range" id="tempo" min="90" max="140" value="116" oninput="setTempo(this.value)">
+            <div id="tempo-row">
+                <label for="tempo">Tempo <span id="bpm-label">116</span> BPM</label>
+                <input type="range" id="tempo" min="90" max="140" value="116" oninput="setTempo(this.value)">
+            </div>
         </div>
     </div>
 
@@ -198,19 +196,6 @@
         const SNARE = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0];
         // D minor pentatonic for the lead, D4..A5
         const LEAD_SCALE = [62, 65, 67, 69, 72, 74, 77, 79, 81];
-
-        // ---- Riff track (E minor, ~152 BPM) ----
-        // A 4-bar riff of straight 8th-note chugs, one guitar root per 8th:
-        // E pedal, a D (or F#-G) pickup into A, then B C C B A G A B.
-        const E = 40, Fs = 42, G = 43, A = 45, B = 47, C = 48, D = 38;
-        const RIFF = [
-            E, E, E, E, E, E, E, E, E, E, E, E, E, E, D, D,
-            A, A, A, A, A, A, A, B, C, C, B, A, G, A, B, B,
-        ];
-        // Every other pass the pickup climbs F#-G instead of dropping to D
-        const RIFF_PICKUP_ALT = [Fs, G];
-        // E minor pentatonic for the lead, E4..B5
-        const RIFF_LEAD_SCALE = [64, 67, 69, 71, 74, 76, 79, 81, 83];
 
         let ctx, master, out, reverbSend, rhythmIn, leadIn;
         let playing = false, nextTime = 0, step = 0, bar = 0, worker;
@@ -317,15 +302,6 @@
             n.connect(f).connect(g).connect(master); n.start(t); n.stop(t + 0.06);
         }
 
-        function crash(t) {
-            const n = noise(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-            f.type = 'highpass'; f.frequency.value = 5000;
-            g.gain.setValueAtTime(0.12, t); g.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
-            n.loop = true;
-            n.connect(f).connect(g); g.connect(master); g.connect(reverbSend);
-            n.start(t); n.stop(t + 1.5);
-        }
-
         function bass(t, note, dur) {
             const f = midi(note);
             const o1 = ctx.createOscillator(), o2 = ctx.createOscillator();
@@ -398,7 +374,7 @@
         ];
 
         // Builds a two-bar phrase as [{step, note, len, bend}] where steps are 16ths from phrase start
-        function makePhrase(intensity, scale = LEAD_SCALE, landing = [62, 69, 74, 81]) {
+        function makePhrase(intensity) {
             const phrase = [];
             let pos = Math.random() < 0.5 ? 0 : 2;
             while (pos < 28) {
@@ -407,16 +383,16 @@
                     if (pos >= 30) break;
                     const r = Math.random();
                     const jump = r < 0.45 ? 1 : r < 0.8 ? -1 : r < 0.9 ? 2 : -2;
-                    leadIdx = Math.max(0, Math.min(scale.length - 1, leadIdx + jump));
+                    leadIdx = Math.max(0, Math.min(LEAD_SCALE.length - 1, leadIdx + jump));
                     if (intensity > 0.6 && leadIdx < 3 && Math.random() < 0.4) leadIdx += 2;
-                    phrase.push({ step: pos, note: scale[leadIdx], len, bend: len >= 4 && Math.random() < 0.45 });
+                    phrase.push({ step: pos, note: LEAD_SCALE[leadIdx], len, bend: len >= 4 && Math.random() < 0.45 });
                     pos += len;
                 }
                 if (Math.random() < 0.55 - intensity * 0.3) pos += 2; // breathe
             }
-            // land on a chord tone of the key for the last note
+            // land on a chord tone of D minor for the last note
             const last = phrase[phrase.length - 1];
-            if (last) { last.note = landing[Math.floor(Math.random() * landing.length)]; last.len = Math.max(last.len, 4); }
+            if (last) { last.note = [62, 69, 74, 81][Math.floor(Math.random() * 4)]; last.len = Math.max(last.len, 4); }
             return phrase;
         }
 
@@ -430,75 +406,9 @@
             return c < 8 ? 'groove' : 'solo';
         }
 
-        const SECTION_NAMES = {
-            intro: 'Bass & pulse', groove: 'Groove', solo: 'Guitar solo',
-            riffIntro: 'Riff alone', riffBuild: 'Band comes in', riffFull: 'Full riff',
-            riffSolo: 'Riff + lead', riffBreak: 'Breakdown',
-        };
-
-        // 'build': 4 bars riff alone, 4 bars band building, then a 32-bar cycle forever:
-        // 8 full, 16 with a lead on top, 4 full, 4 breakdown
-        function riffSectionFor(b) {
-            if (mode === 'groove') return 'riffFull';
-            if (mode === 'solo') return 'riffSolo';
-            if (b < 4) return 'riffIntro';
-            if (b < 8) return 'riffBuild';
-            const c = (b - 8) % 32;
-            return c < 8 ? 'riffFull' : c < 24 ? 'riffSolo' : c < 28 ? 'riffFull' : 'riffBreak';
-        }
-
-        function scheduleRiffStep(t) {
-            const section = riffSectionFor(bar);
-            const s = step;
-            const stepDur = 60 / bpm / 4;
-
-            // drums: straight rock beat, kick 1 & 3, snare 2 & 4, 8th hats
-            if (section === 'riffIntro') {
-                if (s % 4 === 0 && bar >= 2) hat(t, false);
-            } else if (section === 'riffBuild') {
-                if (s % 4 === 0) kick(t);
-                if (bar >= 6 && (s === 4 || s === 12)) snare(t);
-                if (bar === 7 && s >= 12) snare(t);   // fill into the full riff
-                if (s % 2 === 0) hat(t, s % 4 === 0);
-            } else if (section === 'riffBreak') {
-                if (s % 2 === 0) hat(t, s % 4 === 0);
-            } else {
-                if (s === 0 && bar % 4 === 0) crash(t);
-                if (s === 0 || s === 8 || (s === 10 && bar % 2 === 1)) kick(t);
-                if (s === 4 || s === 12) snare(t);
-                if (s % 2 === 0 && !(s === 0 && bar % 4 === 0)) hat(t, s % 4 === 0);
-            }
-
-            // riff: one chug per 8th, accented wherever the root changes
-            if (s % 2 === 0) {
-                const i = (bar % 4) * 8 + s / 2;
-                let root = RIFF[i];
-                if ((i === 14 || i === 15) && Math.floor(bar / 4) % 2 === 1) root = RIFF_PICKUP_ALT[i - 14];
-                const prev = i === 0 ? null : RIFF[i - 1];
-                const accent = root !== prev && root !== E;
-                powerChord(t, root, !accent, stepDur * 2);
-                if (section !== 'riffIntro') bass(t, root - 12, stepDur * 1.9);
-            }
-
-            // lead: 4-bar phrases at half the solo's note density, so it stays melodic
-            if (section === 'riffSolo') {
-                const soloBar = mode === 'solo' ? bar : (bar - 8) % 32 - 8;
-                if (s === 0 && soloBar % 4 === 0) {
-                    const intensity = mode === 'solo' ? 0.6 : soloBar / 16;
-                    leadQueue = makePhrase(intensity, RIFF_LEAD_SCALE, [64, 71, 76, 83])
-                        .map(n => ({ ...n, step: n.step * 2, len: n.len * 2, bar: bar }));
-                }
-                const local = (bar - (leadQueue[0]?.bar ?? bar)) * 16 + s;
-                for (const n of leadQueue) {
-                    if (n.step === local) leadNote(t, n.note, n.len * stepDur * 0.92, n.bend);
-                }
-            }
-
-            uiQueue.push({ t, s, section });
-        }
+        const SECTION_NAMES = { intro: 'Bass & pulse', groove: 'Groove', solo: 'Guitar solo' };
 
         function scheduleStep(t) {
-            if (track === 'riff') return scheduleRiffStep(t);
             const section = sectionFor(bar);
             const root = PROGRESSION[bar % 4];
             const s = step;
@@ -552,12 +462,90 @@
             }
         }
 
+        // ---- Recorded riff ----
+        // riff.mp3 is cut from the original recording, back to back:
+        //   intro: the 3:01-3:26 riff section, which runs straight into
+        //   full:  a full-band loop region, then
+        //   riff:  a riff-only loop region.
+        // Each loop region's tail is pre-crossfaded into what precedes its start, so it wraps seamlessly.
+        const RIFF_URL = '/audio/riff.mp3';
+        const RIFF_RATE = 44100, RIFF_SAMPLES = 3591151;
+        const REGIONS = { intro: [0, 1116171], full: [1116171, 3033816], riff: [3033816, 3591151] };
+        // Downbeat of every 4-bar riff pass, in seconds into the file (drives the step display)
+        const RIFF_CYCLES = [0, 6.365, 12.664, 19.003, 25.31, 31.534, 37.776, 43.992, 50.174, 56.377, 62.611, 68.794, 75.093, 81.432];
+
+        let riffBuf, riffLead = 0, riffOut, riffSrc = null, riffLoading = false;
+
+        async function loadRiff() {
+            if (riffBuf) return;
+            const res = await fetch(RIFF_URL);
+            riffBuf = await ctx.decodeAudioData(await res.arrayBuffer());
+            // Decoders that ignore the MP3 gapless header prepend the encoder delay; skip past it
+            const extra = riffBuf.duration - RIFF_SAMPLES / RIFF_RATE;
+            riffLead = extra > 0 ? Math.min(extra, 1105 / RIFF_RATE) : 0;
+        }
+
+        function riffPlan(m) {
+            const sec = ([a, b]) => [a / RIFF_RATE + riffLead, b / RIFF_RATE + riffLead];
+            const full = sec(REGIONS.full), riff = sec(REGIONS.riff);
+            if (m === 'riff') return { offset: riff[0], loop: riff };
+            if (m === 'full') return { offset: full[0], loop: full };
+            return { offset: riffLead, loop: full };   // build: the 3:01 section, then the full band forever
+        }
+
+        function startRiff(when, m) {
+            const { offset, loop } = riffPlan(m);
+            const node = ctx.createBufferSource();
+            node.buffer = riffBuf; node.loop = true;
+            node.loopStart = loop[0]; node.loopEnd = loop[1];
+            const g = ctx.createGain();
+            g.gain.setValueAtTime(0, when); g.gain.linearRampToValueAtTime(1, when + 0.005);
+            node.connect(g).connect(riffOut);
+            node.start(when, offset);
+            return { node, g, t0: when, offset, loop };
+        }
+
+        // Position in the file (seconds, without riffLead) that src is playing at context time t
+        function riffPos(src, t) {
+            let p = src.offset + Math.max(0, t - src.t0);
+            const [ls, le] = src.loop;
+            if (p >= le) p = ls + ((p - ls) % (le - ls));
+            return p - riffLead;
+        }
+
+        // Switch arrangement on the next riff downbeat so the change lands in time
+        function switchRiff(m) {
+            const t = ctx.currentTime, pos = riffPos(riffSrc, t);
+            const next = RIFF_CYCLES.find(c => c > pos + 0.05) ?? RIFF_CYCLES[RIFF_CYCLES.length - 1];
+            const when = t + (next - pos), old = riffSrc;
+            old.g.gain.setValueAtTime(1, when); old.g.gain.linearRampToValueAtTime(0, when + 0.03);
+            old.node.stop(when + 0.05);
+            riffSrc = startRiff(when, m);
+        }
+
+        function riffSection(pos) {
+            if (pos < REGIONS.intro[1] / RIFF_RATE) return 'Riff · 3:01';
+            if (pos < REGIONS.full[1] / RIFF_RATE) return 'Full band';
+            return 'Riff loop';
+        }
+
         // ---- UI ----
         const stepsEl = document.getElementById('steps');
         for (let i = 0; i < 16; i++) stepsEl.appendChild(document.createElement('span'));
 
         function draw() {
             if (!playing) return;
+            if (track === 'riff') {
+                if (riffSrc) {
+                    const pos = riffPos(riffSrc, ctx.currentTime);
+                    const k = Math.max(0, RIFF_CYCLES.findIndex(c => c > pos) - 1);
+                    const frac = (pos - RIFF_CYCLES[k]) / (RIFF_CYCLES[k + 1] - RIFF_CYCLES[k]);
+                    const s = Math.floor(frac * 64) % 16;
+                    [...stepsEl.children].forEach((el, i) => el.classList.toggle('hit', i === s));
+                    document.getElementById('section').textContent = riffSection(pos);
+                }
+                return requestAnimationFrame(draw);
+            }
             while (uiQueue.length && uiQueue[0].t <= ctx.currentTime) {
                 const { s, section } = uiQueue.shift();
                 [...stepsEl.children].forEach((el, i) => el.classList.toggle('hit', i === s));
@@ -566,11 +554,24 @@
             requestAnimationFrame(draw);
         }
 
-        function toggle() {
+        async function start() {
             const btn = document.getElementById('play');
-            if (!playing) {
-                if (!ctx) buildGraph();
-                ctx.resume();
+            if (!ctx) {
+                buildGraph();
+                riffOut = ctx.createGain();   // the recording is already mixed, so skip the synth bus compressor
+                riffOut.connect(out);
+            }
+            ctx.resume();
+            if (track === 'riff') {
+                if (riffLoading) return;
+                btn.textContent = 'Loading…';
+                riffLoading = true;
+                try { await loadRiff(); } catch (e) { btn.textContent = '▶ Play'; alert('Could not load the riff audio.'); return; }
+                finally { riffLoading = false; }
+                if (track !== 'riff') return start();   // switched tracks while loading
+                playing = true;
+                riffSrc = startRiff(ctx.currentTime + 0.05, mode);
+            } else {
                 playing = true; step = 0; bar = 0; leadIdx = 4; uiQueue.length = 0;
                 nextTime = ctx.currentTime + 0.1;
                 // Worker timers keep ticking when the tab is in the background
@@ -580,38 +581,60 @@
                     worker.onmessage = () => playing && scheduler();
                 }
                 worker.postMessage(1);
-                btn.textContent = '■ Stop'; btn.classList.add('on');
-                requestAnimationFrame(draw);
-            } else {
-                playing = false;
-                worker.postMessage(0);
-                ctx.suspend();
-                btn.textContent = '▶ Play'; btn.classList.remove('on');
-                [...stepsEl.children].forEach(el => el.classList.remove('hit'));
-                document.getElementById('section').textContent = '—';
             }
+            btn.textContent = '■ Stop'; btn.classList.add('on');
+            requestAnimationFrame(draw);
+        }
+
+        function stop() {
+            playing = false;
+            if (worker) worker.postMessage(0);
+            if (riffSrc) { riffSrc.node.stop(); riffSrc = null; }
+            ctx.suspend();
+            const btn = document.getElementById('play');
+            btn.textContent = '▶ Play'; btn.classList.remove('on');
+            [...stepsEl.children].forEach(el => el.classList.remove('hit'));
+            document.getElementById('section').textContent = '—';
+        }
+
+        function toggle() {
+            if (playing) stop(); else start();
         }
 
         function setMode(m) {
             mode = m;
             document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+            if (playing && track === 'riff' && riffSrc) switchRiff(m);
         }
 
         const TRACKS = {
-            groove: { bpm: 116, min: 90, max: 140, sub: 'An endless, original minor-key bass-and-guitar build. Generated live, so the solo never repeats exactly.' },
-            riff: { bpm: 152, min: 120, max: 170, sub: 'A chugging E-minor riff looped into a full arrangement: riff alone, band, lead, breakdown, and around again.' },
+            groove: {
+                sub: 'An endless, original minor-key bass-and-guitar build. Generated live, so the solo never repeats exactly.',
+                modes: [['build', 'Build'], ['groove', 'Groove only'], ['solo', 'Solo']],
+            },
+            riff: {
+                sub: 'The recorded E-minor riff from 3:01, then the full band, looped seamlessly on the downbeat.',
+                modes: [['build', 'Build'], ['full', 'Full band'], ['riff', 'Riff only']],
+            },
         };
 
         function setTrack(name) {
+            const wasPlaying = playing;
+            if (wasPlaying) stop();
             track = name;
             const cfg = TRACKS[name];
             document.querySelectorAll('#tracks button').forEach(b => b.classList.toggle('active', b.dataset.track === name));
             document.getElementById('sub').textContent = cfg.sub;
-            const tempo = document.getElementById('tempo');
-            tempo.min = cfg.min; tempo.max = cfg.max; tempo.value = cfg.bpm;
-            setTempo(cfg.bpm);
-            // restart the arrangement from the top on the next step
-            step = 0; bar = 0; leadIdx = 4; leadQueue = [];
+            document.getElementById('tempo-row').style.display = name === 'riff' ? 'none' : '';
+            const modesEl = document.getElementById('modes');
+            modesEl.innerHTML = '';
+            for (const [m, label] of cfg.modes) {
+                const b = document.createElement('button');
+                b.dataset.mode = m; b.textContent = label; b.onclick = () => setMode(m);
+                modesEl.appendChild(b);
+            }
+            setMode('build');
+            if (wasPlaying) start();
         }
 
         function setVolume(v) {
