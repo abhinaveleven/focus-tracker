@@ -463,16 +463,19 @@
         }
 
         // ---- Recorded riff ----
-        // riff.mp3 is cut from the original recording, back to back:
-        //   intro: the 3:01-3:26 riff section, which runs straight into
-        //   full:  a full-band loop region, then
-        //   riff:  a riff-only loop region.
-        // Each loop region's tail is pre-crossfaded into what precedes its start, so it wraps seamlessly.
+        // riff.mp3 is cut from the original recording, three loop regions back to back:
+        //   main: 3:01.5-4:04.1 as played. The riff section, the full band, then over the last two
+        //         passes the drums fade out (separated drum stem subtracted) and the mix eases down
+        //         to the level of the quiet 3:01 riff it wraps back into.
+        //   full: a full-band region (3:26.8-4:10.3)
+        //   riff: a riff-only region (3:07.9-3:20.5)
+        // Each region's tail is pre-crossfaded into what precedes its start, so it wraps seamlessly.
         const RIFF_URL = '/audio/riff.mp3';
-        const RIFF_RATE = 44100, RIFF_SAMPLES = 3591151;
-        const REGIONS = { intro: [0, 1116171], full: [1116171, 3033816], riff: [3033816, 3591151] };
+        const RIFF_RATE = 44100, RIFF_SAMPLES = 5236125;
+        const REGIONS = { main: [0, 2761145], full: [2761145, 4678790], riff: [4678790, 5236125] };
         // Downbeat of every 4-bar riff pass, in seconds into the file (drives the step display)
-        const RIFF_CYCLES = [0, 6.365, 12.664, 19.003, 25.31, 31.534, 37.776, 43.992, 50.174, 56.377, 62.611, 68.794, 75.093, 81.432];
+        const RIFF_CYCLES = [0, 6.365, 12.664, 19.003, 25.31, 31.534, 37.776, 43.992, 50.174, 56.377, 62.611,
+            68.835, 75.077, 81.293, 87.475, 93.678, 99.912, 106.095, 112.394, 118.733];
 
         let riffBuf, riffLead = 0, riffOut, riffSrc = null, riffLoading = false;
 
@@ -487,10 +490,10 @@
 
         function riffPlan(m) {
             const sec = ([a, b]) => [a / RIFF_RATE + riffLead, b / RIFF_RATE + riffLead];
-            const full = sec(REGIONS.full), riff = sec(REGIONS.riff);
+            const main = sec(REGIONS.main), full = sec(REGIONS.full), riff = sec(REGIONS.riff);
             if (m === 'riff') return { offset: riff[0], loop: riff };
             if (m === 'full') return { offset: full[0], loop: full };
-            return { offset: riffLead, loop: full };   // build: the 3:01 section, then the full band forever
+            return { offset: main[0], loop: main };
         }
 
         function startRiff(when, m) {
@@ -524,7 +527,10 @@
         }
 
         function riffSection(pos) {
-            if (pos < REGIONS.intro[1] / RIFF_RATE) return 'Riff · 3:01';
+            if (pos < 25.31) return 'Riff · 3:01';
+            if (pos < 50.174) return 'Full band';
+            if (pos < 56.377) return 'Drums fading out';
+            if (pos < REGIONS.main[1] / RIFF_RATE) return 'Riff, easing back';
             if (pos < REGIONS.full[1] / RIFF_RATE) return 'Full band';
             return 'Riff loop';
         }
@@ -613,8 +619,8 @@
                 modes: [['build', 'Build'], ['groove', 'Groove only'], ['solo', 'Solo']],
             },
             riff: {
-                sub: 'The recorded E-minor riff from 3:01, then the full band, looped seamlessly on the downbeat.',
-                modes: [['build', 'Build'], ['full', 'Full band'], ['riff', 'Riff only']],
+                sub: 'The recorded riff from 3:01 builds into the full band, the drums fade away, and it starts back over, looped seamlessly on the downbeat.',
+                modes: [['build', 'Riff → band → fade'], ['full', 'Full band'], ['riff', 'Riff only']],
             },
         };
 
