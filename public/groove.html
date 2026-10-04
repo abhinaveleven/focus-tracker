@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Focus Groove</title>
+    <style>
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg: #0f0f0f;
+            --bg2: #1a1a1a;
+            --bg3: #242424;
+            --border: rgba(255, 255, 255, 0.08);
+            --border2: rgba(255, 255, 255, 0.15);
+            --text: #f0f0f0;
+            --text2: #888;
+            --text3: #555;
+            --accent: #4ade80;
+            --accent-dim: rgba(74, 222, 128, 0.12);
+            --radius: 10px;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+            -webkit-font-smoothing: antialiased;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            padding: 2rem 1rem 4rem;
+        }
+
+        .wrap {
+            width: 100%;
+            max-width: 420px;
+        }
+
+        a.back {
+            color: var(--text2);
+            text-decoration: none;
+            font-size: 0.85rem;
+        }
+
+        h1 {
+            font-size: 1.4rem;
+            font-weight: 600;
+            margin: 1.2rem 0 0.3rem;
+        }
+
+        .sub {
+            color: var(--text2);
+            font-size: 0.85rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.25rem;
+        }
+
+        .play {
+            width: 100%;
+            padding: 0.9rem;
+            font-size: 1rem;
+            font-weight: 600;
+            border-radius: var(--radius);
+            border: 1px solid var(--accent);
+            background: var(--accent-dim);
+            color: var(--accent);
+            cursor: pointer;
+        }
+
+        .play.on {
+            background: var(--bg3);
+            border-color: var(--border2);
+            color: var(--text);
+        }
+
+        .section {
+            display: flex;
+            justify-content: space-between;
+            margin: 1rem 0 0.5rem;
+            font-size: 0.85rem;
+            color: var(--text2);
+        }
+
+        .section b {
+            color: var(--text);
+            font-weight: 500;
+        }
+
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(16, 1fr);
+            gap: 3px;
+            margin-bottom: 1.25rem;
+        }
+
+        .steps span {
+            height: 6px;
+            border-radius: 2px;
+            background: var(--bg3);
+        }
+
+        .steps span.hit {
+            background: var(--accent);
+        }
+
+        label {
+            display: block;
+            font-size: 0.8rem;
+            color: var(--text2);
+            margin: 0.9rem 0 0.4rem;
+        }
+
+        input[type=range] {
+            width: 100%;
+            accent-color: var(--accent);
+        }
+
+        .modes {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .modes button {
+            flex: 1;
+            padding: 0.5rem;
+            font-size: 0.8rem;
+            border-radius: 8px;
+            border: 1px solid var(--border2);
+            background: transparent;
+            color: var(--text2);
+            cursor: pointer;
+        }
+
+        .modes button.active {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: var(--accent-dim);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="wrap">
+        <a class="back" href="/">← Focus Tracker</a>
+        <h1>Focus Groove</h1>
+        <p class="sub">An endless, original minor-key bass-and-guitar build. Generated live, so the solo never repeats exactly.</p>
+
+        <div class="card">
+            <button class="play" id="play" onclick="toggle()">▶ Play</button>
+
+            <div class="section"><span>Section</span><b id="section">—</b></div>
+            <div class="steps" id="steps"></div>
+
+            <label>Arrangement</label>
+            <div class="modes">
+                <button class="active" data-mode="build" onclick="setMode('build')">Build</button>
+                <button data-mode="groove" onclick="setMode('groove')">Groove only</button>
+                <button data-mode="solo" onclick="setMode('solo')">Solo</button>
+            </div>
+
+            <label for="vol">Volume</label>
+            <input type="range" id="vol" min="0" max="100" value="70" oninput="setVolume(this.value)">
+
+            <label for="tempo">Tempo <span id="bpm-label">116</span> BPM</label>
+            <input type="range" id="tempo" min="90" max="140" value="116" oninput="setTempo(this.value)">
+        </div>
+    </div>
+
+    <script>
+        // ---- Music data (D minor, i–VI–VII–i) ----
+        const midi = n => 440 * Math.pow(2, (n - 69) / 12);
+        const PROGRESSION = [50, 46, 48, 50];   // D, Bb, C, D (bar roots for guitar, octave 3)
+        // Bass ostinato, semitones above the bar's root (null = rest), 16 steps
+        const BASS = [0, null, 0, 12, null, 0, 7, null, 0, null, 0, 12, 7, null, 5, 7];
+        // Rhythm guitar: 'm' = palm-muted chug, 'o' = open accent
+        const RHYTHM = ['o', null, 'm', 'm', null, null, 'm', null, 'm', null, 'o', null, 'm', 'm', null, 'm'];
+        const KICK = [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+        const SNARE = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0];
+        // D minor pentatonic for the lead, D4..A5
+        const LEAD_SCALE = [62, 65, 67, 69, 72, 74, 77, 79, 81];
+
+        let ctx, master, out, reverbSend, rhythmIn, leadIn;
+        let playing = false, nextTime = 0, step = 0, bar = 0, worker;
+        let bpm = 116, mode = 'build', volume = 0.7;
+        let leadQueue = [];
+        const uiQueue = [];
+
+        // ---- Audio graph ----
+        function distortionCurve(k) {
+            const n = 2048, c = new Float32Array(n);
+            for (let i = 0; i < n; i++) {
+                const x = (i * 2) / n - 1;
+                c[i] = ((1 + k) * x) / (1 + k * Math.abs(x));
+            }
+            return c;
+        }
+
+        function impulse(seconds, decay) {
+            const len = ctx.sampleRate * seconds, buf = ctx.createBuffer(2, len, ctx.sampleRate);
+            for (let ch = 0; ch < 2; ch++) {
+                const d = buf.getChannelData(ch);
+                for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+            }
+            return buf;
+        }
+
+        // amp-style chain: drive -> cabinet filtering -> output
+        function guitarAmp(drive, cabCutoff, gain) {
+            const input = ctx.createGain();
+            const pre = ctx.createBiquadFilter(); pre.type = 'highpass'; pre.frequency.value = 120;
+            const shaper = ctx.createWaveShaper(); shaper.curve = distortionCurve(drive); shaper.oversample = '4x';
+            const mid = ctx.createBiquadFilter(); mid.type = 'peaking'; mid.frequency.value = 900; mid.gain.value = 4; mid.Q.value = 0.8;
+            const cab = ctx.createBiquadFilter(); cab.type = 'lowpass'; cab.frequency.value = cabCutoff; cab.Q.value = 0.9;
+            const cab2 = ctx.createBiquadFilter(); cab2.type = 'lowpass'; cab2.frequency.value = cabCutoff * 1.4;
+            const level = ctx.createGain(); level.gain.value = gain;
+            input.connect(pre).connect(shaper).connect(mid).connect(cab).connect(cab2).connect(level);
+            return { input, output: level };
+        }
+
+        function buildGraph() {
+            ctx = new (window.AudioContext || window.webkitAudioContext)();
+            out = ctx.createGain(); out.gain.value = volume;
+            const comp = ctx.createDynamicsCompressor();
+            comp.threshold.value = -14; comp.ratio.value = 4; comp.attack.value = 0.01; comp.release.value = 0.2;
+            master = ctx.createGain(); master.gain.value = 0.8;
+            master.connect(comp).connect(out).connect(ctx.destination);
+
+            const verb = ctx.createConvolver(); verb.buffer = impulse(2.2, 3);
+            reverbSend = ctx.createGain(); reverbSend.gain.value = 0.18;
+            reverbSend.connect(verb).connect(master);
+
+            const rhythm = guitarAmp(60, 3200, 0.22);
+            rhythm.output.connect(master);
+            rhythm.output.connect(reverbSend);
+            rhythmIn = rhythm.input;
+
+            const lead = guitarAmp(140, 3800, 0.2);
+            const delay = ctx.createDelay(2); delay.delayTime.value = (60 / bpm) * 0.75;
+            const fb = ctx.createGain(); fb.gain.value = 0.32;
+            const delayTone = ctx.createBiquadFilter(); delayTone.type = 'lowpass'; delayTone.frequency.value = 2500;
+            lead.output.connect(master);
+            lead.output.connect(delay).connect(delayTone).connect(fb).connect(delay);
+            delayTone.connect(master);
+            lead.output.connect(reverbSend);
+            leadIn = lead.input;
+            leadIn.delay = delay;
+        }
+
+        let noiseBuf;
+        function noise() {
+            if (!noiseBuf) {
+                noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+                const d = noiseBuf.getChannelData(0);
+                for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+            }
+            const s = ctx.createBufferSource(); s.buffer = noiseBuf; return s;
+        }
+
+        // ---- Instruments ----
+        function kick(t) {
+            const o = ctx.createOscillator(), g = ctx.createGain();
+            o.frequency.setValueAtTime(140, t);
+            o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+            g.gain.setValueAtTime(0.9, t);
+            g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+            o.connect(g).connect(master); o.start(t); o.stop(t + 0.4);
+        }
+
+        function snare(t) {
+            const n = noise(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+            f.type = 'bandpass'; f.frequency.value = 1800; f.Q.value = 0.7;
+            g.gain.setValueAtTime(0.45, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+            n.connect(f).connect(g); g.connect(master); g.connect(reverbSend);
+            n.start(t); n.stop(t + 0.2);
+            const o = ctx.createOscillator(), og = ctx.createGain();
+            o.frequency.value = 190; og.gain.setValueAtTime(0.3, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+            o.connect(og).connect(master); o.start(t); o.stop(t + 0.1);
+        }
+
+        function hat(t, accent) {
+            const n = noise(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+            f.type = 'highpass'; f.frequency.value = 7500;
+            g.gain.setValueAtTime(accent ? 0.13 : 0.07, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+            n.connect(f).connect(g).connect(master); n.start(t); n.stop(t + 0.06);
+        }
+
+        function bass(t, note, dur) {
+            const f = midi(note);
+            const o1 = ctx.createOscillator(), o2 = ctx.createOscillator();
+            o1.type = 'sawtooth'; o1.frequency.value = f;
+            o2.type = 'sine'; o2.frequency.value = f;
+            const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 2;
+            lp.frequency.setValueAtTime(1400, t); lp.frequency.exponentialRampToValueAtTime(380, t + 0.12);
+            const g = ctx.createGain();
+            g.gain.setValueAtTime(0.0001, t);
+            g.gain.linearRampToValueAtTime(0.32, t + 0.005);
+            g.gain.exponentialRampToValueAtTime(0.12, t + dur * 0.6);
+            g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+            const sg = ctx.createGain(); sg.gain.value = 0.6;
+            o1.connect(lp).connect(g); o2.connect(sg).connect(g); g.connect(master);
+            o1.start(t); o2.start(t); o1.stop(t + dur + 0.02); o2.stop(t + dur + 0.02);
+        }
+
+        function powerChord(t, root, muted, dur) {
+            const g = ctx.createGain();
+            const tone = ctx.createBiquadFilter(); tone.type = 'lowpass';
+            tone.frequency.value = muted ? 900 : 5000;
+            const len = muted ? 0.11 : dur;
+            g.gain.setValueAtTime(0.0001, t);
+            g.gain.linearRampToValueAtTime(muted ? 0.5 : 0.6, t + 0.004);
+            g.gain.exponentialRampToValueAtTime(muted ? 0.001 : 0.25, t + len);
+            if (!muted) g.gain.exponentialRampToValueAtTime(0.001, t + len + 0.1);
+            tone.connect(g).connect(rhythmIn);
+            [0, 7, 12].forEach((iv, i) => {
+                [-6, 6].forEach(cents => {
+                    const o = ctx.createOscillator(); o.type = 'sawtooth';
+                    o.frequency.value = midi(root + iv); o.detune.value = cents + i * 2;
+                    o.connect(tone); o.start(t + i * 0.004); o.stop(t + len + 0.15);
+                });
+            });
+        }
+
+        function leadNote(t, note, dur, bend) {
+            const g = ctx.createGain();
+            g.gain.setValueAtTime(0.0001, t);
+            g.gain.linearRampToValueAtTime(0.5, t + 0.01);
+            g.gain.setTargetAtTime(0.32, t + 0.02, 0.15);
+            g.gain.setTargetAtTime(0.0001, t + dur, 0.06);
+            g.connect(leadIn);
+            const vib = ctx.createOscillator(), vibAmt = ctx.createGain();
+            vib.frequency.value = 5.5;
+            vibAmt.gain.setValueAtTime(0, t);
+            vibAmt.gain.linearRampToValueAtTime(dur > 0.4 ? 22 : 0, t + Math.min(dur, 0.6));
+            vib.connect(vibAmt);
+            const stopAt = t + dur + 0.4;
+            [-4, 4].forEach(cents => {
+                const o = ctx.createOscillator(); o.type = 'sawtooth';
+                const f = midi(note);
+                if (bend) {
+                    o.frequency.setValueAtTime(midi(note - 2), t);
+                    o.frequency.exponentialRampToValueAtTime(f, t + 0.09);
+                } else {
+                    o.frequency.setValueAtTime(f, t);
+                }
+                o.detune.value = cents;
+                vibAmt.connect(o.detune);
+                o.connect(g); o.start(t); o.stop(stopAt);
+            });
+            vib.start(t); vib.stop(stopAt);
+        }
+
+        // ---- Generative lead ----
+        let leadIdx = 4;
+        const RHYTHM_CELLS = [
+            [2, 2, 4], [1, 1, 2, 4], [4, 2, 2], [3, 3, 2], [2, 1, 1, 4], [6, 2], [8], [2, 2, 2, 2],
+        ];
+
+        // Builds a two-bar phrase as [{step, note, len, bend}] where steps are 16ths from phrase start
+        function makePhrase(intensity) {
+            const phrase = [];
+            let pos = Math.random() < 0.5 ? 0 : 2;
+            while (pos < 28) {
+                const cell = RHYTHM_CELLS[Math.floor(Math.random() * RHYTHM_CELLS.length)];
+                for (const len of cell) {
+                    if (pos >= 30) break;
+                    const r = Math.random();
+                    const jump = r < 0.45 ? 1 : r < 0.8 ? -1 : r < 0.9 ? 2 : -2;
+                    leadIdx = Math.max(0, Math.min(LEAD_SCALE.length - 1, leadIdx + jump));
+                    if (intensity > 0.6 && leadIdx < 3 && Math.random() < 0.4) leadIdx += 2;
+                    phrase.push({ step: pos, note: LEAD_SCALE[leadIdx], len, bend: len >= 4 && Math.random() < 0.45 });
+                    pos += len;
+                }
+                if (Math.random() < 0.55 - intensity * 0.3) pos += 2; // breathe
+            }
+            // land on a chord tone of D minor for the last note
+            const last = phrase[phrase.length - 1];
+            if (last) { last.note = [62, 69, 74, 81][Math.floor(Math.random() * 4)]; last.len = Math.max(last.len, 4); }
+            return phrase;
+        }
+
+        // ---- Arrangement ----
+        // 'build': 4-bar intro of bass + kick, 8 bars groove, 16 bars solo, then groove/solo forever
+        function sectionFor(b) {
+            if (mode === 'groove') return 'groove';
+            if (mode === 'solo') return 'solo';
+            if (b < 4) return 'intro';
+            const c = (b - 4) % 24;
+            return c < 8 ? 'groove' : 'solo';
+        }
+
+        const SECTION_NAMES = { intro: 'Bass & pulse', groove: 'Groove', solo: 'Guitar solo' };
+
+        function scheduleStep(t) {
+            const section = sectionFor(bar);
+            const root = PROGRESSION[bar % 4];
+            const s = step;
+            const stepDur = 60 / bpm / 4;
+
+            // drums
+            if (KICK[s]) kick(t);
+            if (section !== 'intro') {
+                if (SNARE[s]) snare(t);
+                if (s % 2 === 0) hat(t, s % 4 === 0);
+                if (section === 'solo' && s % 2 === 1 && Math.random() < 0.35) hat(t, false);
+            } else if (s % 4 === 0) hat(t, false);
+
+            // bass
+            const b = BASS[s];
+            if (b !== null) {
+                let len = 1;
+                while (s + len < 16 && BASS[s + len] === null) len++;
+                bass(t, root - 12 + b, len * stepDur * 0.95);
+            }
+
+            // rhythm guitar
+            if (section !== 'intro' && RHYTHM[s]) {
+                const open = RHYTHM[s] === 'o';
+                powerChord(t, root, !open, stepDur * (open ? 3 : 1));
+            }
+
+            // lead
+            if (section === 'solo') {
+                const soloBar = mode === 'solo' ? bar : (bar - 4) % 24 - 8;
+                if (s === 0 && soloBar % 2 === 0) {
+                    const intensity = mode === 'solo' ? 0.7 : soloBar / 16;
+                    leadQueue = makePhrase(intensity).map(n => ({ ...n, bar: bar }));
+                }
+                const local = (bar - (leadQueue[0]?.bar ?? bar)) * 16 + s;
+                for (const n of leadQueue) {
+                    if (n.step === local) leadNote(t, n.note, n.len * stepDur * 0.92, n.bend);
+                }
+            }
+
+            uiQueue.push({ t, s, section });
+        }
+
+        function scheduler() {
+            const ahead = document.hidden ? 1.5 : 0.15;
+            while (nextTime < ctx.currentTime + ahead) {
+                scheduleStep(nextTime);
+                nextTime += 60 / bpm / 4;
+                step++;
+                if (step === 16) { step = 0; bar++; }
+            }
+        }
+
+        // ---- UI ----
+        const stepsEl = document.getElementById('steps');
+        for (let i = 0; i < 16; i++) stepsEl.appendChild(document.createElement('span'));
+
+        function draw() {
+            if (!playing) return;
+            while (uiQueue.length && uiQueue[0].t <= ctx.currentTime) {
+                const { s, section } = uiQueue.shift();
+                [...stepsEl.children].forEach((el, i) => el.classList.toggle('hit', i === s));
+                document.getElementById('section').textContent = SECTION_NAMES[section];
+            }
+            requestAnimationFrame(draw);
+        }
+
+        function toggle() {
+            const btn = document.getElementById('play');
+            if (!playing) {
+                if (!ctx) buildGraph();
+                ctx.resume();
+                playing = true; step = 0; bar = 0; leadIdx = 4; uiQueue.length = 0;
+                nextTime = ctx.currentTime + 0.1;
+                // Worker timers keep ticking when the tab is in the background
+                if (!worker) {
+                    const src = 'let id;onmessage=e=>{clearInterval(id);if(e.data)id=setInterval(()=>postMessage(0),25)}';
+                    worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+                    worker.onmessage = () => playing && scheduler();
+                }
+                worker.postMessage(1);
+                btn.textContent = '■ Stop'; btn.classList.add('on');
+                requestAnimationFrame(draw);
+            } else {
+                playing = false;
+                worker.postMessage(0);
+                ctx.suspend();
+                btn.textContent = '▶ Play'; btn.classList.remove('on');
+                [...stepsEl.children].forEach(el => el.classList.remove('hit'));
+                document.getElementById('section').textContent = '—';
+            }
+        }
+
+        function setMode(m) {
+            mode = m;
+            document.querySelectorAll('.modes button').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+        }
+
+        function setVolume(v) {
+            volume = v / 100;
+            if (out) out.gain.setTargetAtTime(volume, ctx.currentTime, 0.05);
+        }
+
+        function setTempo(v) {
+            bpm = +v;
+            document.getElementById('bpm-label').textContent = v;
+            if (leadIn) leadIn.delay.delayTime.setTargetAtTime((60 / bpm) * 0.75, ctx.currentTime, 0.1);
+        }
+    </script>
+</body>
+
+</html>
